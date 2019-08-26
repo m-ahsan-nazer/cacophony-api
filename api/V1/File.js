@@ -16,17 +16,17 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const models            = require('../../models');
-const util              = require('./util');
-const responseUtil      = require('./responseUtil');
-const config            = require('../../config');
-const jsonwebtoken      = require('jsonwebtoken');
-const middleware        = require('../middleware');
-const { query, param }  = require('express-validator/check');
-
+const models = require("../../models");
+const util = require("./util");
+const responseUtil = require("./responseUtil");
+const config = require("../../config");
+const jsonwebtoken = require("jsonwebtoken");
+const middleware = require("../middleware");
+const auth = require("../auth");
+const { query, param } = require("express-validator/check");
 
 module.exports = (app, baseUrl) => {
-  var apiUrl = baseUrl + '/files';
+  const apiUrl = baseUrl + "/files";
 
   /**
    * @api {post} /api/v1/files Adds a new file.
@@ -46,16 +46,12 @@ module.exports = (app, baseUrl) => {
    */
   app.post(
     apiUrl,
-    [
-      middleware.authenticateUser,
-    ],
+    [auth.authenticateUser],
     middleware.requestWrapper(
-      util.multipartUpload((request, data, key) => {
-        var dbRecord = models.File.build(data, {
-          fields: models.File.apiSettableFields,
-        });
-        dbRecord.set('UserId', request.user.id);
-        dbRecord.set('fileKey', key);
+      util.multipartUpload("f", (request, data, key) => {
+        const dbRecord = models.File.buildSafely(data);
+        dbRecord.UserId = request.user.id;
+        dbRecord.fileKey = key;
         return dbRecord;
       })
     )
@@ -67,35 +63,37 @@ module.exports = (app, baseUrl) => {
    * @apiGroup Files
    *
    * @apiHeader {String} Authorization Signed JSON web token for a user or device.
-   *
-   * @apiUse QueryParams
-   *
+   * @apiUse BaseQueryParams
    * @apiUse V1ResponseSuccessQuery
    */
   app.get(
     apiUrl,
     [
-      middleware.authenticateUser,
-      middleware.parseJSON('where', query),
-      query('offset').isInt().optional(),
-      query('limit').isInt().optional(),
-      middleware.parseJSON('order', query).optional(),
+      auth.authenticateUser,
+      middleware.parseJSON("where", query),
+      query("offset")
+        .isInt()
+        .optional(),
+      query("limit")
+        .isInt()
+        .optional(),
+      middleware.parseJSON("order", query).optional()
     ],
     middleware.requestWrapper(async (request, response) => {
-
       if (request.query.offset == null) {
-        request.query.offset = '0';
+        request.query.offset = "0";
       }
 
       if (request.query.offset == null) {
-        request.query.limit = '100';
+        request.query.limit = "100";
       }
 
-      var result = await models.File.query(
+      const result = await models.File.query(
         request.query.where,
         request.query.offset,
         request.query.limit,
-        request.query.order);
+        request.query.order
+      );
 
       return responseUtil.send(response, {
         statusCode: 200,
@@ -103,7 +101,7 @@ module.exports = (app, baseUrl) => {
         limit: request.query.limit,
         offset: request.query.offset,
         count: result.count,
-        rows: result.rows,
+        rows: result.rows
       });
     })
   );
@@ -117,6 +115,7 @@ module.exports = (app, baseUrl) => {
    * @apiHeader {String} Authorization Signed JSON web token for either a user or a device.
    *
    * @apiUse V1ResponseSuccess
+   * @apiSuccess {int} fileSize the number of bytes in the file.
    * @apiSuccess {String} jwt JSON Web Token to use to download the
    * recording file.
    * @apiSuccess {JSON} file Metadata for the file.
@@ -124,67 +123,58 @@ module.exports = (app, baseUrl) => {
    * @apiUse V1ResponseError
    */
   app.get(
-    apiUrl + '/:id',
-    [
-      middleware.authenticateAny,
-      middleware.getFileById(param),
-    ],
+    apiUrl + "/:id",
+    [auth.authenticateAny, middleware.getFileById(param)],
     middleware.requestWrapper(async (request, response) => {
+      const file = request.body.file;
 
-      var file = request.body.file;
-
-      var downloadFileData = {
-        _type: 'fileDownload',
-        key: file.fileKey,
+      const downloadFileData = {
+        _type: "fileDownload",
+        key: file.fileKey
       };
+
+      const s3Data = await util.getS3Object(file.fileKey).catch(err => {
+        return responseUtil.serverError(response, err);
+      });
 
       return responseUtil.send(response, {
         statusCode: 200,
         messages: [],
         file: file,
-        jwt: jsonwebtoken.sign(
-          downloadFileData,
-          config.server.passportSecret,
-          { expiresIn: 60 * 10 }
-        ),
+        fileSize: s3Data.ContentLength,
+        jwt: jsonwebtoken.sign(downloadFileData, config.server.passportSecret, {
+          expiresIn: 60 * 10
+        })
       });
     })
   );
 
   /**
-  * @api {delete} /api/v1/files/:id Delete an existing files
-  * @apiName DeleteFile
-  * @apiGroup Files
-  * @apiDescription This call deletes a file.  The user making the
-  * call must have uploaded the file or be an administrator.
-  *
-  * [/api/v1/signedUrl API](#api-SignedUrl-GetFile).
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  */
+   * @api {delete} /api/v1/files/:id Delete an existing files
+   * @apiName DeleteFile
+   * @apiGroup Files
+   * @apiDescription This call deletes a file.  The user making the
+   * call must have uploaded the file or be an administrator.
+   *
+   * [/api/v1/signedUrl API](#api-SignedUrl-GetFile).
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   */
   app.delete(
-    apiUrl + '/:id',
-    [
-      middleware.authenticateUser,
-      middleware.getFileById(param),
-    ],
+    apiUrl + "/:id",
+    [auth.authenticateUser, middleware.getFileById(param)],
     middleware.requestWrapper(async (request, response) => {
-
-      var deleted = await models.File.deleteIfAllowed(request.user, request.body.file);
-      if (deleted) {
-        responseUtil.send(response, {
-          statusCode: 200,
-          messages: ["Deleted file."],
-        });
-      } else {
-        responseUtil.send(response, {
-          statusCode: 400,
-          messages: ["Failed to delete file. Files can only be deleted by the admins and the person who uploaded the file."],
-        });
-      }
+      await models.File.deleteIfAllowedElseThrow(
+        request.user,
+        request.body.file
+      );
+      responseUtil.send(response, {
+        statusCode: 200,
+        messages: ["Deleted file."]
+      });
     })
   );
 };

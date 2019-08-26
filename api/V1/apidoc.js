@@ -5,7 +5,6 @@
  * @apiSuccess {String[]} messages Messages about the request.
  */
 
-
 /**
  * @apiDefine V1ResponseSuccess
  * @apiSuccess {Boolean} success `true` - Request was successful.
@@ -29,7 +28,7 @@
  */
 
 /**
- * @apiDefine QueryParams
+ * @apiDefine BaseQueryParams
  * @apiParam {JSON} [where] Selection criteria as a map of keys and requried value, or a list of possible values.
  * * For example {"device": 1}  or {"name": ["bob", "charles"]}.
  * * All matches must be exact.
@@ -40,7 +39,22 @@
  * @apiParam {Number} [limit] Max number of records to be returned.
  * @apiParam {JSON} [order] Sorting order for records.
  * * For example, ["dateTime"] or [["dateTime", "ASC"]].
-*/
+ */
+
+/**
+ * @apiDefine MoreQueryParams
+ * @apiParam {JSON} [tags] Only return recordings tagged with one or more of the listed tags (JSON array).
+ * @apiParam {String} [tagMode] Only return recordings with specific types of tags. Valid values:
+ * <ul>
+ * <li>any: match recordings with any (or no) tag
+ * <li>untagged: match only recordings with no tags
+ * <li>tagged: match only recordings which have been tagged
+ * <li>no-human: match only recordings which are untagged or have been automatically tagged
+ * <li>automatic-only: match only recordings which have been automatically tagged
+ * <li>human-only: match only recordings which have been manually tagged
+ * <li>automatic+human: match only recordings which have been both automatically & manually tagged
+ * </ul>
+ */
 
 /**
  * @apiDefine V1ResponseSuccessQuery
@@ -50,7 +64,7 @@
  * @apiSuccess {Number} limit Mirrors request limit parameter.
  * @apiSuccess {Number} count Total number of records which match the query.
  * @apiSuccess {JSON} rows List of details for records which matched the query.
-*/
+ */
 
 /**
  * @apiDefine MetaDataAndJWT
@@ -58,7 +72,7 @@
  * and a JSON Web Token (JWT) which can be used to retrieve the recorded
  * content. The web token should be used with the
  * [/api/v1/signedUrl API](#api-SignedUrl-GetFile) to retrieve the file.
-*/
+ */
 
 /**
  * @apiDefine FilterOptions
@@ -66,4 +80,4 @@
  * <ul>
  * <li>latLongPrec: Maximum precision of latitude longitude coordinates in meters. Minimum 100m
  * </ul>
-*/
+ */

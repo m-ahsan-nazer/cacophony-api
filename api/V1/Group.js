@@ -16,13 +16,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const models       = require('../../models');
-const responseUtil = require('./responseUtil');
-const middleware   = require('../middleware');
-const { query, body } = require('express-validator/check');
+const models = require("../../models");
+const responseUtil = require("./responseUtil");
+const middleware = require("../middleware");
+const auth = require("../auth");
+const { query, body } = require("express-validator/check");
 
 module.exports = function(app, baseUrl) {
-  var apiUrl = baseUrl + '/groups';
+  const apiUrl = baseUrl + "/groups";
 
   /**
    * @api {post} /api/v1/groups Create a new group
@@ -42,17 +43,19 @@ module.exports = function(app, baseUrl) {
   app.post(
     apiUrl,
     [
-      middleware.authenticateUser,
-      middleware.checkNewName('groupname')
-        .custom(value => { return models.Group.freeGroupname(value); }),
+      auth.authenticateUser,
+      middleware.checkNewName("groupname").custom(value => {
+        return models.Group.freeGroupname(value);
+      })
     ],
     middleware.requestWrapper(async (request, response) => {
-
-      const newGroup = await models.Group.create({groupname: request.body.groupname});
-      await newGroup.addUser(request.user.id, {through: {admin: true}});
+      const newGroup = await models.Group.create({
+        groupname: request.body.groupname
+      });
+      await newGroup.addUser(request.user.id, { through: { admin: true } });
       return responseUtil.send(response, {
         statusCode: 200,
-        messages: ['Created new group.']
+        messages: ["Created new group."]
       });
     })
   );
@@ -67,113 +70,97 @@ module.exports = function(app, baseUrl) {
    * @apiParam {JSON} where [Sequelize where conditions](http://docs.sequelizejs.com/manual/tutorial/querying.html#where) for query.
    *
    * @apiUse V1ResponseSuccess
+   * @apiSuccess {Groups[]} groups Array of groups
    *
    * @apiUse V1ResponseError
    */
   app.get(
     apiUrl,
-    [
-      middleware.authenticateUser,
-      middleware.parseJSON('where', query),
-    ],
+    [auth.authenticateUser, middleware.parseJSON("where", query)],
     middleware.requestWrapper(async (request, response) => {
-
-      var groups = await models.Group.query(request.query.where, request.user);
+      const groups = await models.Group.query(
+        request.query.where,
+        request.user
+      );
       return responseUtil.send(response, {
         statusCode: 200,
         messages: [],
-        groups: groups,
+        groups: groups
       });
     })
   );
 
   /**
-  * @api {post} /api/v1/groups/users Add a user to a group.
-  * @apiName AddUserToGroup
-  * @apiGroup Group
-  * @apiDescription This call can add a user to a group. Has to be authenticated
-  * by an admin from the group or a user with global write permission. It can also be used to update the
-  * admin status of a user for the group by setting admin to true or false.
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiParam {Number} group name of the group.
-  * @apiParam {Number} username name of the user to add to the grouop.
-  * @apiParam {Boolean} admin If the user should be an admin for the group.
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  */
+   * @api {post} /api/v1/groups/users Add a user to a group.
+   * @apiName AddUserToGroup
+   * @apiGroup Group
+   * @apiDescription This call can add a user to a group. Has to be authenticated
+   * by an admin from the group or a user with global write permission. It can also be used to update the
+   * admin status of a user for the group by setting admin to true or false.
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiParam {Number} group name of the group.
+   * @apiParam {Number} username name of the user to add to the grouop.
+   * @apiParam {Boolean} admin If the user should be an admin for the group.
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   */
   app.post(
-    apiUrl + '/users',
+    apiUrl + "/users",
     [
-      middleware.authenticateUser,
+      auth.authenticateUser,
       middleware.getGroupByNameOrId(body),
       middleware.getUserByNameOrId(body),
-      body('admin').isBoolean(),
+      body("admin").isBoolean()
     ],
     middleware.requestWrapper(async (request, response) => {
-
-      var added = await models.Group.addUserToGroup(
+      await models.Group.addUserToGroup(
         request.user,
         request.body.group,
         request.body.user,
-        request.body.admin,
+        request.body.admin
       );
-      if (added) {
-        return responseUtil.send(response, {
-          statusCode: 200,
-          messages: ['Added user to group.'],
-        });
-      } else {
-        return responseUtil.send(response, {
-          statusCode: 400,
-          messages: ['Failed to add user to group.'],
-        });
-      }
+      return responseUtil.send(response, {
+        statusCode: 200,
+        messages: ["Added user to group."]
+      });
     })
   );
 
   /**
-  * @api {delete} /api/v1/groups/users Removes a user from a group.
-  * @apiName RemoveUserFromGroup
-  * @apiGroup Group
-  * @apiDescription This call can remove a user from a group. Has to be authenticated
-  * by an admin from the group or a user with global write permission.
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiParam {Number} group name of the group.
-  * @apiParam {Number} username username of user to remove from the grouop.
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  */
+   * @api {delete} /api/v1/groups/users Removes a user from a group.
+   * @apiName RemoveUserFromGroup
+   * @apiGroup Group
+   * @apiDescription This call can remove a user from a group. Has to be authenticated
+   * by an admin from the group or a user with global write permission.
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiParam {Number} group name of the group.
+   * @apiParam {Number} username username of user to remove from the grouop.
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   */
   app.delete(
-    apiUrl + '/users',
+    apiUrl + "/users",
     [
-      middleware.authenticateUser,
+      auth.authenticateUser,
       middleware.getUserByNameOrId(body),
-      middleware.getGroupByNameOrId(body),
+      middleware.getGroupByNameOrId(body)
     ],
     middleware.requestWrapper(async (request, response) => {
-
-      var removed = await models.Group.removeUserFromGroup(
+      await models.Group.removeUserFromGroup(
         request.user,
         request.body.group,
-        request.body.user,
+        request.body.user
       );
-      if (removed) {
-        return responseUtil.send(response, {
-          statusCode: 200,
-          messages: ['Removed user from the group.'],
-        });
-      } else {
-        return responseUtil.send(response, {
-          statusCode: 400,
-          messages: ['Failed to remove user from the group.'],
-        });
-      }
+      return responseUtil.send(response, {
+        statusCode: 200,
+        messages: ["Removed user from the group."]
+      });
     })
   );
 };

@@ -16,61 +16,75 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-'use strict';
-module.exports = function(sequelize, DataTypes) {
-  var name = 'File';
+"use strict";
 
-  var attributes = {
+const _ = require("lodash");
+const sequelize = require("sequelize");
+const Op = sequelize.Op;
+
+const { AuthorizationError } = require("../api/customErrors");
+
+module.exports = function(sequelize, DataTypes) {
+  const name = "File";
+
+  const attributes = {
     type: DataTypes.STRING,
     fileKey: DataTypes.STRING,
-    fileSize: DataTypes.STRING,
     details: DataTypes.JSONB
   };
 
-  var File = sequelize.define(name, attributes);
+  const File = sequelize.define(name, attributes);
 
-  File.apiSettableFields = [
-    'type',
-    'details',
-  ];
+  File.apiSettableFields = ["type", "details"];
 
   //---------------
   // CLASS METHODS
   //---------------
+
+  File.buildSafely = function(fields) {
+    return File.build(_.pick(fields, File.apiSettableFields));
+  };
 
   File.addAssociations = function(models) {
     models.File.belongsTo(models.User);
   };
 
   /**
-  * Return one or more files for a user matching the query
-  * arguments given.
-  */
+   * Return one or more files for a user matching the query
+   * arguments given.
+   */
   File.query = async function(where, offset, limit, order) {
     if (order == null) {
-      order = [
-        ["id", "DESC"],
-      ];
+      order = [["id", "DESC"]];
     }
 
-    var q = {
+    const q = {
       where: where,
       order: order,
-      attributes: { exclude : ['updatedAt', 'fileKey'] },
+      attributes: { exclude: ["updatedAt", "fileKey"] },
       limit: limit,
-      offset: offset,
+      offset: offset
     };
     return this.findAndCountAll(q);
   };
 
-  File.deleteIfAllowed = async function(user, file) {
-    if (user.hasGlobalWrite() || user.id == file.UserId) {
-      await file.destroy();
-      return true;
+  File.deleteIfAllowedElseThrow = async function(user, file) {
+    if (!user.hasGlobalWrite() && user.id != file.UserId) {
+      throw new AuthorizationError(
+        "The user does not own that file and is not a global admin!"
+      );
     }
-    else {
-      return false;
-    }
+    await file.destroy();
+  };
+
+  File.getMultiple = async function(ids) {
+    return this.findAll({
+      where: {
+        id: {
+          [Op.in]: ids
+        }
+      }
+    });
   };
 
   return File;

@@ -1,19 +1,22 @@
 // Config instructions: Fill out required fields and save as 'config.js'
 
-var server = { // General server settings
+const server = {
+  // General server settings
   passportSecret: "random string", // REQUIRED, String. Random string used for passport module for encrypting JWT.
   loggerLevel: "debug", // REQUIRED, one of ('debug', 'warning', 'info', 'error')
   http: {
     active: true,
-    port: 80,
+    port: 80
   },
+  recording_url_base: "http://localhost/recording"
 };
 
-var fileProcessing = { // File processing API settings (runs on different port)
-  port: 2002,
+const fileProcessing = {
+  // File processing API settings (runs on different port)
+  port: 2002
 };
 
-var database = {
+const database = {
   username: "root",
   password: "",
   database: "cacophony",
@@ -21,11 +24,12 @@ var database = {
   dialect: "postgres"
 };
 
-var s3 = {  // Used for storing audio & video recordings.
-  publicKey: "",  // REQUIRED, String:
+const s3 = {
+  // Used for storing audio & video recordings.
+  publicKey: "", // REQUIRED, String:
   privateKey: "", // REQUIRED, String
-  bucket: "cacophony",   // REQUIRED, String
-  endpoint: "http://localhost:9000", // REQUIRED, URL
+  bucket: "cacophony", // REQUIRED, String
+  endpoint: "http://localhost:9000" // REQUIRED, URL
 };
 
 exports.server = server;

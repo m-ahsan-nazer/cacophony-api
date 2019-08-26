@@ -16,26 +16,30 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const stream          = require('stream');
+const stream = require("stream");
 
-const config          = require('../../config');
-const log             = require('../../logging');
-const middleware      = require('../middleware');
-const modelsUtil      = require('../../models/util/util');
-const responseUtil    = require('./responseUtil');
-const { ClientError } = require('../customErrors');
-
+const config = require("../../config");
+const log = require("../../logging");
+const middleware = require("../middleware");
+const auth = require("../auth");
+const modelsUtil = require("../../models/util/util");
+const responseUtil = require("./responseUtil");
+const { ClientError } = require("../customErrors");
 
 module.exports = function(app, baseUrl) {
-
   /**
    * @api {get} /api/v1/signedUrl Get a file using a JWT
    * @apiName GetFile
    * @apiGroup SignedUrl
    *
-   * @apiDescription Gets a file using a JWT as a method of authentication.
+   * @apiDescription Gets a file. The JWT for authentication may be
+   * passed using a URL parameter or using the Authorization header
+   * (as for other API endpoints).
    *
-   * @apiHeader {String} Authorization JWT for the content to retrieve. Must start with "JWT ".
+   * @apiParam {String} [jwt] the value of the downloadFileJWT field
+   * from a successful [GetRecording](#api-Recordings-GetRecording)
+   * request. Authentication using the Authorization header is also
+   * supported.
    *
    * @apiSuccess {file} file Raw data stream of the file.
    *
@@ -43,24 +47,21 @@ module.exports = function(app, baseUrl) {
    */
 
   app.get(
-    baseUrl + '/signedUrl',
-    [
-      middleware.signedUrl,
-    ],
+    baseUrl + "/signedUrl",
+    [auth.signedUrl],
     middleware.requestWrapper(async (request, response) => {
+      const mimeType = request.jwtDecoded.mimeType || "";
+      const filename = request.jwtDecoded.filename || "file";
 
-      var mimeType = request.jwtDecoded.mimeType || "";
-      var filename = request.jwtDecoded.filename || "file";
-
-      var key = request.jwtDecoded.key;
+      const key = request.jwtDecoded.key;
       if (!key) {
         throw new ClientError("No key provided.");
       }
 
-      var s3 = modelsUtil.openS3();
-      var params = {
+      const s3 = modelsUtil.openS3();
+      const params = {
         Bucket: config.s3.bucket,
-        Key: key,
+        Key: key
       };
 
       s3.getObject(params, function(err, data) {
@@ -71,37 +72,37 @@ module.exports = function(app, baseUrl) {
         }
 
         if (!request.headers.range) {
-          response.setHeader('Content-disposition',
-            'attachment; filename=' + filename);
-          response.setHeader('Content-type', mimeType);
-          response.write(data.Body, 'binary');
-          return response.end(null, 'binary');
+          response.setHeader(
+            "Content-disposition",
+            "attachment; filename=" + filename
+          );
+          response.setHeader("Content-type", mimeType);
+          response.setHeader("Content-Length", data.ContentLength);
+          response.write(data.Body, "binary");
+          return response.end(null, "binary");
         }
 
-        var range = request.headers.range;
-        var positions = range.replace(/bytes=/, "").split("-");
-        var start = parseInt(positions[0], 10);
-        var total = data.Body.length;
-        var end = positions[1] ?
-          parseInt(positions[1], 10) :
-          total - 1;
-        var chunksize = (end - start) + 1;
+        const range = request.headers.range;
+        const positions = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(positions[0], 10);
+        const total = data.Body.length;
+        const end = positions[1] ? parseInt(positions[1], 10) : total - 1;
+        const chunksize = end - start + 1;
 
-        var headers = {
-          'Content-Range': 'bytes ' + start + '-' + end + '/' + total,
-          'Content-Length': chunksize,
-          'Accept-Ranges': 'bytes',
-          'Content-type': mimeType,
+        const headers = {
+          "Content-Range": "bytes " + start + "-" + end + "/" + total,
+          "Content-Length": chunksize,
+          "Accept-Ranges": "bytes",
+          "Content-type": mimeType
         };
 
         response.writeHead(206, headers);
 
-        var bufStream = new stream.PassThrough();
-        var b2 = data.Body.slice(start, end + 1);
+        const bufStream = new stream.PassThrough();
+        const b2 = data.Body.slice(start, end + 1);
         bufStream.end(b2);
         bufStream.pipe(response);
       });
-
     })
   );
 };

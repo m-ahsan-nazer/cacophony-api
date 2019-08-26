@@ -16,15 +16,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const { body } = require('express-validator/check');
+const { body } = require("express-validator/check");
 
-const middleware = require('../middleware');
-const models = require('../../models');
-const recordingUtil = require('./recordingUtil');
-const responseUtil = require('./responseUtil');
+const middleware = require("../middleware");
+const auth = require("../auth");
+const models = require("../../models");
+const recordingUtil = require("./recordingUtil");
+const responseUtil = require("./responseUtil");
 
 module.exports = function(app, baseUrl) {
-  var apiUrl = baseUrl + '/tags';
+  const apiUrl = baseUrl + "/tags";
 
   /**
    * @api {post} /api/v1/tags Adds a new tag
@@ -34,19 +35,12 @@ module.exports = function(app, baseUrl) {
    * @apiDescription This call is used to tag a recording. Only users that can
    * view a recording can tag it. It takes a `tag` field which contains a JSON
    * object string that may contain any of the following fields:
-   * - animal
+   * - what (legacy name "animal" is also supported)
+   * - detail (legacy name "event" is also supported)
    * - confidence
    * - startTime
    * - duration
-   * - number
-   * - trapType
-   * - trapInteractionTime
-   * - trapInteractionDuration
-   * - trappedTime
-   * - killedTime
-   * - poisionedTime
-   * - sex
-   * - age
+   * - version (hex coded, e.g. 0x0110 would be v1.10)
    *
    * @apiUse V1UserAuthorizationHeader
    *
@@ -62,40 +56,34 @@ module.exports = function(app, baseUrl) {
   app.post(
     apiUrl,
     [
-      middleware.authenticateUser,
-      middleware.parseJSON('tag', body),
-      body('recordingId').isInt(),
+      auth.authenticateUser,
+      middleware.parseJSON("tag", body),
+      body("recordingId").isInt()
     ],
     middleware.requestWrapper(async function(request, response) {
-      await recordingUtil.addTag(request, response);
+      const recording = await models.Recording.get(
+        request.user,
+        request.body.recordingId,
+        models.Recording.Perms.TAG
+      );
+      await recordingUtil.addTag(
+        request.user,
+        recording,
+        request.body.tag,
+        response
+      );
     })
   );
 
   // Delete a tag
   app.delete(
     apiUrl,
-    [
-      middleware.authenticateUser,
-      body('tagId').isInt(),
-    ],
+    [auth.authenticateUser, body("tagId").isInt()],
     middleware.requestWrapper(async function(request, response) {
-
-      // Check that user has permission to delete the tag.
-      //TODO
-      /*
-      var userCanDeleteTag = await models.Tag.userCanDelete(req.body.tagId,
-        req.user);
-      if (!userCanDeleteTag)
-        return responseUtil.send(res, {
-          statusCode: 400,
-          messages: [
-            "Given user does not have permission to delete the tag."
-          ]
-        })
-      */
-
-      // Delete the tag
-      var tagDeleteResult = await models.Tag.deleteFromId(request.body.tagId, request.user);
+      const tagDeleteResult = await models.Tag.deleteFromId(
+        request.body.tagId,
+        request.user
+      );
       if (tagDeleteResult) {
         return responseUtil.send(response, {
           statusCode: 200,

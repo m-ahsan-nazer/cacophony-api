@@ -16,20 +16,26 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-'use strict';
-module.exports = function(sequelize, DataTypes) {
-  var name = 'Schedule';
+"use strict";
+const _ = require("lodash");
 
-  var attributes = {
+module.exports = function(sequelize, DataTypes) {
+  const name = "Schedule";
+
+  const attributes = {
     schedule: DataTypes.JSONB
   };
 
-  var Schedule = sequelize.define(name, attributes);
+  const Schedule = sequelize.define(name, attributes);
 
   //---------------
   // CLASS METHODS
   //---------------
-  
+
+  Schedule.buildSafely = function(fields) {
+    return Schedule.build(_.pick(fields, ["schedule"]));
+  };
+
   Schedule.addAssociations = function(models) {
     models.Schedule.belongsTo(models.User);
     models.Schedule.hasMany(models.Device);
@@ -37,4 +43,3 @@ module.exports = function(sequelize, DataTypes) {
 
   return Schedule;
 };
-

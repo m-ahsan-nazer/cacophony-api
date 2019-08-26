@@ -5,13 +5,17 @@ from urllib.parse import urljoin
 
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 
+from .testexception import raise_specific_exception
+
 
 class APIBase:
     def __init__(self, logintype, baseurl, loginname, password="password"):
+        self._logintype = logintype
         self._baseurl = baseurl
         self._loginname = loginname
-        self._logintype = logintype
         self._password = password
+        self._response = None
+        self.postdata = {}
 
     def login(self, email=None):
         url = urljoin(self._baseurl, "/authenticate_" + self._logintype)
@@ -22,20 +26,12 @@ class APIBase:
     def check_login_response(self, response):
         if response.status_code == 200:
             self._set_jwt_token(response)
-        elif response.status_code == 422:
+            return
+        if response.status_code == 422:
             raise ValueError(
-                "Could not log on as '{}'.  Please check {} name.".format(
-                    self._loginname, self._logintype
-                )
+                "Could not log on as '{}'.  Please check {} name.".format(self._loginname, self._logintype)
             )
-        elif response.status_code == 401:
-            raise ValueError(
-                "Could not log on as '{}'.  Please check password.".format(
-                    self._loginname
-                )
-            )
-        else:
-            response.raise_for_status()
+        raise_specific_exception(response)
 
     def register_as_new(self, group=None, email=None):
         url = urljoin(self._baseurl, "/api/v1/{}s".format(self._logintype))
@@ -46,8 +42,8 @@ class APIBase:
         if email:
             data["email"] = email
         response = requests.post(url, data=data)
-
         if response.status_code == 200:
+            self._response = response.json()
             self._set_jwt_token(response)
         else:
             self._check_response(response)
@@ -57,37 +53,39 @@ class APIBase:
     def _create_login_and_password_map(self, email=None):
         if email:
             return {"email": email, "password": self._password}
+
         nameProp = self._logintype + "name"
-        return {nameProp: self._loginname, "password": self._password}
+        data = {nameProp: self._loginname, "password": self._password}
+        data.update(self.postdata)
+        return data
 
     def _set_jwt_token(self, response):
         self._token = response.json().get("token")
         self._auth_header = {"Authorization": self._token}
 
     def _check_response(self, response):
-        if not response.status_code == 200:
-            raise IOError(
-                "request failed ({}): {}".format(response.status_code, response.text)
-            )
-        return response.json()
+        if response.status_code == 200:
+            return response.json()
+        raise_specific_exception(response)
 
     def get_login_name(self):
         return self._loginname
 
     def _download_signed(self, token):
         response = requests.get(
-            urljoin(self._baseurl, "/api/v1/signedUrl"),
-            params={"jwt": token},
-            stream=True,
+            urljoin(self._baseurl, "/api/v1/signedUrl"), params={"jwt": token}, stream=True
         )
-        response.raise_for_status()
+        raise_specific_exception(response)
         yield from response.iter_content(chunk_size=4096)
 
-    def download_file(self, file_id):
+    def get_file(self, file_id):
         url = urljoin(self._baseurl, "/api/v1/files/{}".format(file_id))
         response = requests.get(url, headers=self._auth_header)
-        self._check_response(response)
-        return self._download_signed(response.json()["jwt"])
+        return self._check_response(response)
+
+    def download_file(self, file_id):
+        json = self.get_file(file_id)
+        return self._download_signed(json["jwt"])
 
     def _upload(self, url, filename, props):
         url = urljoin(self._baseurl, url)
@@ -95,15 +93,9 @@ class APIBase:
 
         with open(filename, "rb") as content:
             multipart_data = MultipartEncoder(
-                fields={
-                    "data": json_props,
-                    "file": (os.path.basename(filename), content),
-                }
+                fields={"data": json_props, "file": (os.path.basename(filename), content)}
             )
-            headers = {
-                "Content-Type": multipart_data.content_type,
-                "Authorization": self._token,
-            }
+            headers = {"Content-Type": multipart_data.content_type, "Authorization": self._token}
             r = requests.post(url, data=multipart_data, headers=headers)
         self._check_response(r)
         return r.json()["recordingId"]

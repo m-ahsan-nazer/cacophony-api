@@ -16,13 +16,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const { body, param } = require('express-validator/check');
-const models = require('../../models');
-const responseUtil = require('./responseUtil');
-const middleware   = require('../middleware');
+const { body, param } = require("express-validator/check");
+const models = require("../../models");
+const responseUtil = require("./responseUtil");
+const middleware = require("../middleware");
+const auth = require("../auth");
 
 module.exports = (app, baseUrl) => {
-  var apiUrl = baseUrl + '/schedules';
+  const apiUrl = baseUrl + "/schedules";
 
   /**
    * @api {post} /api/v1/schedules Adds a new schedule
@@ -43,26 +44,27 @@ module.exports = (app, baseUrl) => {
   app.post(
     apiUrl,
     [
-      middleware.authenticateUser,
-      middleware.parseArray('devices', body),
-      middleware.parseJSON('schedule', body),
+      auth.authenticateUser,
+      middleware.parseArray("devices", body),
+      middleware.parseJSON("schedule", body),
+      auth.userCanAccessDevices
     ],
-    middleware.ifUsersDeviceRequestWrapper(async function(request, response) {
-      var deviceIds = request.body.devices;
+    middleware.requestWrapper(async function(request, response) {
+      const deviceIds = request.body.devices;
 
-      var instance = models.Schedule.build(request.body, ["schedule"]);
-      instance.set('UserId', request.user.id);
+      const instance = models.Schedule.buildSafely(request.body);
+      instance.UserId = request.user.id;
       // TODO make the device and schedule changes apply in a single transaction
       await instance.save();
 
       await models.Device.update(
-        {ScheduleId: instance.id},
-        {where: {id: deviceIds}}
+        { ScheduleId: instance.id },
+        { where: { id: deviceIds } }
       );
 
       return responseUtil.send(response, {
         statusCode: 200,
-        messages: ['Added new schedule for the calling device(s).'],
+        messages: ["Added new schedule for the calling device(s)."]
       });
     })
   );
@@ -82,16 +84,14 @@ module.exports = (app, baseUrl) => {
    */
   app.get(
     apiUrl,
-    [
-      middleware.authenticateDevice,
-    ],
+    [auth.authenticateDevice],
     middleware.requestWrapper(async (request, response) => {
       return getSchedule(request.device, response);
     })
   );
 
   /**
-   * @api {get} api/v1/schedules/:devicename Get audio bait schedule (for a user's device)
+   * @api {get} api/v1/schedules/:deviceId Get audio bait schedule (for a user's device)
    * @apiName GetScheduleForDevice
    * @apiGroup Schedules
    * @apiDescription This call is used by a user to retrieve the audio bait
@@ -104,19 +104,20 @@ module.exports = (app, baseUrl) => {
    * @apiUse V1ResponseError
    */
   app.get(
-    apiUrl + "/:devicename",
+    apiUrl + "/:deviceId",
     [
-      middleware.authenticateUser,
-      middleware.getDeviceByName(param),
+      auth.authenticateUser,
+      middleware.getDeviceById(param),
+      auth.userCanAccessDevices
     ],
-    middleware.ifUsersDeviceRequestWrapper(async (request, response) => {
+    middleware.requestWrapper(async (request, response) => {
       getSchedule(request.device, response, request.user);
     })
   );
 };
 
 async function getSchedule(device, response, user = null) {
-  var schedule = {schedule: {}};
+  let schedule = { schedule: {} };
 
   if (device.ScheduleId) {
     schedule = await models.Schedule.findByPk(device.ScheduleId);
@@ -124,17 +125,18 @@ async function getSchedule(device, response, user = null) {
       return responseUtil.send(response, {
         statusCode: 400,
         devicename: device.devicename,
-        messages: ["Cannot find schedule."],
+        messages: ["Cannot find schedule."]
       });
     }
   }
 
   // get all the users devices that are also associated with this same schedule
-  var devices = [];
+  let devices = [];
   if (user && device.ScheduleId) {
-    devices = await models.Device.onlyUsersDevicesMatching(user, { ScheduleId : device.ScheduleId });
-  }
-  else {
+    devices = await models.Device.onlyUsersDevicesMatching(user, {
+      ScheduleId: device.ScheduleId
+    });
+  } else {
     devices = {
       count: 1,
       rows: [device]
@@ -145,6 +147,6 @@ async function getSchedule(device, response, user = null) {
     statusCode: 200,
     messages: [],
     devices: devices,
-    schedule: schedule.schedule,
+    schedule: schedule.schedule
   });
 }

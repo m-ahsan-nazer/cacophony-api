@@ -16,30 +16,29 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const moment       = require('moment');
-const uuidv4       = require('uuid/v4');
-const multiparty   = require('multiparty');
-const log          = require('../../logging');
-const responseUtil = require('./responseUtil');
-const config       = require('../../config');
-const modelsUtil   = require('../../models/util/util');
+const moment = require("moment");
+const uuidv4 = require("uuid/v4");
+const multiparty = require("multiparty");
+const log = require("../../logging");
+const responseUtil = require("./responseUtil");
+const config = require("../../config");
+const modelsUtil = require("../../models/util/util");
 
-
-function multipartUpload(buildRecord){
+function multipartUpload(keyPrefix, buildRecord) {
   return (request, response) => {
-    var key = moment().format('YYYY/MM/DD/') + uuidv4();
-    var data;
-    var filename;
-    var upload;
+    const key = keyPrefix + "/" + moment().format("YYYY/MM/DD/") + uuidv4();
+    let data;
+    let filename;
+    let upload;
 
     // Note regarding multiparty: there are no guarantees about the
     // order that the field and part handlers will be called. You need
     // to formulate the response to the client in the close handler.
-    var form = new multiparty.Form();
+    const form = new multiparty.Form();
 
     // Handle the "data" field.
-    form.on('field', (name, value) => {
-      if (name != 'data') {
+    form.on("field", (name, value) => {
+      if (name != "data") {
         return;
       }
 
@@ -53,32 +52,35 @@ function multipartUpload(buildRecord){
     });
 
     // Handle the "file" part.
-    form.on('part', (part) => {
-      if (part.name != 'file') {
+    form.on("part", part => {
+      if (part.name != "file") {
         part.resume();
         return;
       }
       filename = part.filename;
 
-      upload = modelsUtil.openS3().upload({
-        Bucket: config.s3.bucket,
-        Key: key,
-        Body: part,
-      }).promise()
-        .catch((err) => {
+      upload = modelsUtil
+        .openS3()
+        .upload({
+          Bucket: config.s3.bucket,
+          Key: key,
+          Body: part
+        })
+        .promise()
+        .catch(err => {
           return err;
         });
-      log.debug('Started streaming upload to bucket...');
+      log.debug("Started streaming upload to bucket...");
     });
 
     // Handle any errors. If this is called, the close handler
     // shouldn't be.
-    form.on('error', (err) => {
+    form.on("error", err => {
       responseUtil.serverError(response, err);
     });
 
     // This gets called once all fields and parts have been read.
-    form.on('close', async () => {
+    form.on("close", async () => {
       if (!data) {
         log.error("Upload missing 'data' field.");
         responseUtil.invalidDatapointUpload(response);
@@ -90,10 +92,10 @@ function multipartUpload(buildRecord){
         return;
       }
 
-      var dbRecord;
+      let dbRecord;
       try {
         // Wait for the upload to complete.
-        var uploadResult = await upload;
+        const uploadResult = await upload;
         if (uploadResult instanceof Error) {
           responseUtil.serverError(response, uploadResult);
           return;
@@ -117,4 +119,14 @@ function multipartUpload(buildRecord){
   };
 }
 
+function getS3Object(fileKey) {
+  const s3 = modelsUtil.openS3();
+  const params = {
+    Bucket: config.s3.bucket,
+    Key: fileKey
+  };
+  return s3.headObject(params).promise();
+}
+
+exports.getS3Object = getS3Object;
 exports.multipartUpload = multipartUpload;

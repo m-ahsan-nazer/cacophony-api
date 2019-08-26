@@ -4,3 +4,5 @@ testconfig.json
 .pytest_cache
 __pycache__
 /dist/
+
+api/middleware-ah.js

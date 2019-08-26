@@ -16,108 +16,108 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-var util = require('./util/util');
+const util = require("./util/util");
+const _ = require("lodash");
 
 module.exports = function(sequelize, DataTypes) {
-  var name = 'Tag';
+  const name = "Tag";
 
-  var attributes = {
-
-    animal: { // Name of animal for the Tag
-      type: DataTypes.STRING,
+  const attributes = {
+    what: {
+      type: DataTypes.STRING
     },
-    event: {
-      type: DataTypes.STRING,
+    detail: {
+      type: DataTypes.STRING
     },
-    confidence: { // 0-Not sure at all, 1-100% positive.
-      type: DataTypes.FLOAT,
+    confidence: {
+      // 0: Not sure at all; 1: 100% positive
+      type: DataTypes.FLOAT
     },
-    startTime: { // Start time of the tag in the linked recording in seconds
-      type: DataTypes.FLOAT,
+    startTime: {
+      // Start time of the tag in the linked recording in seconds
+      type: DataTypes.FLOAT
     },
-    duration: { // duration of the tag
-      type: DataTypes.FLOAT,
+    duration: {
+      // duration of the tag
+      type: DataTypes.FLOAT
     },
-    number: { // Number of animals in tag
-      type: DataTypes.INTEGER,
-    },
-    trapType: {
-      type: DataTypes.STRING,
-    },
-    sex: { // What sex is the animal, null if don't know.
-      type: DataTypes.ENUM('F', 'M'),
-    },
-    age: { // Guessed age in weeks of animal
-      type: DataTypes.INTEGER,
-    },
-    automatic: { // True if the tag was automatically generated.
+    automatic: {
+      // True if the tag was automatically generated.
       type: DataTypes.BOOLEAN,
       allowNull: false,
-      defaultValue: false,
+      defaultValue: false
     },
+    version: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0x0100
+    }
   };
 
-  var Tag = sequelize.define(name, attributes);
+  const Tag = sequelize.define(name, attributes);
 
   //---------------
   // CLASS METHODS
   //---------------
+  const Recording = sequelize.models.Recording;
+
+  Tag.buildSafely = function(fields) {
+    return Tag.build(_.pick(fields, Tag.apiSettableFields));
+  };
 
   Tag.addAssociations = function(models) {
-    models.Tag.belongsTo(models.User, {as: 'tagger'});
+    models.Tag.belongsTo(models.User, { as: "tagger" });
     models.Tag.belongsTo(models.Recording);
   };
-  
+
   Tag.getFromId = function(id, user, attributes) {
     util.GetFromId(id, user, attributes);
   };
-  
+
   Tag.deleteModelInstance = function(id, user) {
     util.deleteModelInstance(id, user);
   };
-  
+
   Tag.deleteFromId = async function(id, user) {
-    var tag = await this.findOne({where: {id: id}});
+    const tag = await this.findOne({ where: { id: id } });
     if (tag == null) {
-      return false;
-    }
-    if (tag.taggerId === user.id) {
-      await tag.destroy();
       return true;
     }
-    else {return false;}
+    const recording = await Recording.get(
+      user,
+      tag.RecordingId,
+      Recording.Perms.TAG
+    );
+
+    if (recording == null) {
+      return false;
+    }
+
+    await tag.destroy();
+    return true;
   };
-  
-  Tag.prototype.getFrontendFields = function() {
-    var model = this;
-    return {
-      id: model.getDataValue('id'),
-      animal: model.getDataValue('animal'),
-      confidence: model.getDataValue('confidence'),
-      startTime: model.getDataValue('startTime'),
-      duration: model.getDataValue('duration'),
-      number: model.getDataValue('number'),
-      trapType: model.getDataValue('trapType'),
-      event: model.getDataValue('event'),
-      sex: model.getDataValue('sex'),
-      age: model.getDataValue('age'),
-    };
-  };
-  
-  Tag.apiUpdateableFields = [];
-  
-  Tag.apiSettableFields = [
-    'animal',
-    'confidence',
-    'startTime',
-    'duration',
-    'number',
-    'trapType',
-    'event',
-    'sex',
-    'age',
-    'automatic',
-  ];
-  
+
+  Tag.userGetAttributes = Object.freeze([
+    "id",
+    "what",
+    "detail",
+    "confidence",
+    "startTime",
+    "duration",
+    "automatic",
+    "version",
+    "createdAt"
+  ]);
+
+  Tag.apiSettableFields = Object.freeze([
+    "what",
+    "detail",
+    "confidence",
+    "startTime",
+    "duration",
+    "automatic",
+    "version"
+  ]);
+
   return Tag;
 };

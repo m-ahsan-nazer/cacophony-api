@@ -16,17 +16,17 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const { query, param, body } = require('express-validator/check');
+const { query, param, body } = require("express-validator/check");
+const csv = require("fast-csv");
 
-const middleware        = require('../middleware');
-const models            = require('../../models');
-const recordingUtil     = require('./recordingUtil');
-const responseUtil      = require('./responseUtil');
-
-
+const middleware = require("../middleware");
+const auth = require("../auth");
+const models = require("../../models");
+const recordingUtil = require("./recordingUtil");
+const responseUtil = require("./responseUtil");
 
 module.exports = (app, baseUrl) => {
-  var apiUrl = baseUrl + '/recordings';
+  const apiUrl = baseUrl + "/recordings";
 
   /**
    * @apiDefine RecordingParams
@@ -64,22 +64,17 @@ module.exports = (app, baseUrl) => {
    */
   app.post(
     apiUrl,
-    [
-      middleware.authenticateDevice,
-    ],
-    middleware.requestWrapper(
-      recordingUtil.makeUploadHandler()
-    )
+    [auth.authenticateDevice],
+    middleware.requestWrapper(recordingUtil.makeUploadHandler())
   );
 
   /**
-   * @api {post} /api/v1/recordings/:devicename Add a new recording on behalf of device
+   * @api {post} /api/v1/recordings/device/:devicename/group/:groupname? Add a new recording on behalf of device
    * @apiName PostRecordingOnBehalf
    * @apiGroup Recordings
    * @apiDescription Called by a user to upload raw thermal video on behalf of a device.
    * The user must have permission to view videos from the device or the call will return an
-   * error.  It currently supports raw thermal video but will eventually support all
-   * recording types.
+   * error.
    *
    * @apiUse V1UserAuthorizationHeader
    *
@@ -89,16 +84,63 @@ module.exports = (app, baseUrl) => {
    * @apiSuccess {Number} recordingId ID of the recording.
    * @apiuse V1ResponseError
    */
+
   app.post(
-    apiUrl + "/:devicename",
+    apiUrl + "/device/:devicename/group/:groupname",
     [
-      middleware.authenticateUser,
-      middleware.getDeviceByName(param),
+      auth.authenticateUser,
+      middleware.setGroupName(param),
+      middleware.getDevice(param),
+      auth.userCanAccessDevices
     ],
-    middleware.ifUsersDeviceRequestWrapper(
-      recordingUtil.makeUploadHandler()
-    )
+    middleware.requestWrapper(recordingUtil.makeUploadHandler())
   );
+
+  /**
+   * @api {post} /api/v1/recordings/device/:devicename Add a new recording on behalf of device
+   * @apiName PostRecordingOnBehalf
+   * @apiGroup Recordings
+   * @apiDescription Called by a user to upload raw thermal video on behalf of a device.
+   * The user must have permission to view videos from the device or the call will return an
+   * error.
+   *
+   * @apiParam {String} [devicename] can be name or id of a device
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiUse RecordingParams
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiSuccess {Number} recordingId ID of the recording.
+   * @apiuse V1ResponseError
+   */
+
+  app.post(
+    apiUrl + "/device/:devicename",
+    [
+      auth.authenticateUser,
+      middleware.getDevice(param),
+      auth.userCanAccessDevices
+    ],
+    middleware.requestWrapper(recordingUtil.makeUploadHandler())
+  );
+
+  const queryValidators = Object.freeze([
+    middleware.parseJSON("where", query).optional(),
+    query("offset")
+      .isInt()
+      .optional(),
+    query("limit")
+      .isInt()
+      .optional(),
+    middleware.parseJSON("order", query).optional(),
+    middleware.parseArray("tags", query).optional(),
+    query("tagMode")
+      .optional()
+      .custom(value => {
+        return models.Recording.isValidTagMode(value);
+      }),
+    middleware.parseJSON("filterOptions", query).optional()
+  ]);
 
   /**
    * @api {get} /api/v1/recordings Query available recordings
@@ -106,39 +148,15 @@ module.exports = (app, baseUrl) => {
    * @apiGroup Recordings
    *
    * @apiUse V1UserAuthorizationHeader
-   *
-   * @apiUse QueryParams
-   * @apiParam {JSON} [tags] Only return recordings tagged with one or more of the listed tags (JSON array).
-   * @apiParam {String} [tagMode] Only return recordings with specific types of tags. Valid values:
-   * <ul>
-   * <li>any: match recordings with any (or no) tag
-   * <li>untagged: match only recordings with no tags
-   * <li>tagged: match only recordings which have been tagged
-   * <li>no-human: match only recordings which are untagged or have been automatically tagged
-   * <li>automatic-only: match only recordings which have been automatically tagged
-   * <li>human-only: match only recordings which have been manually tagged
-   * <li>automatic+human: match only recordings which have been both automatically & manually tagged
-   * </ul>
+   * @apiUse BaseQueryParams
+   * @apiUse MoreQueryParams
    * @apiUse FilterOptions
-   *
    * @apiUse V1ResponseSuccessQuery
-   *
    * @apiUse V1ResponseError
    */
   app.get(
     apiUrl,
-    [
-      middleware.authenticateUser,
-      middleware.parseJSON('where', query).optional(),
-      query('offset').isInt().optional(),
-      query('limit').isInt().optional(),
-      middleware.parseJSON('order', query).optional(),
-      middleware.parseArray('tags', query).optional(),
-      query('tagMode')
-        .optional()
-        .custom(value => { return models.Recording.isValidTagMode(value); }),
-      middleware.parseJSON('filterOptions', query).optional(),
-    ],
+    [auth.authenticateUser].concat(queryValidators),
     middleware.requestWrapper(async (request, response) => {
       const result = await recordingUtil.query(request);
       responseUtil.send(response, {
@@ -147,8 +165,36 @@ module.exports = (app, baseUrl) => {
         limit: request.query.limit,
         offset: request.query.offset,
         count: result.count,
-        rows: result.rows,
+        rows: result.rows
       });
+    })
+  );
+
+  /**
+   * @api {get} /api/v1/recordings/report Generate report for a set of recordings
+   * @apiName Report
+   * @apiGroup Recordings
+   * @apiDescription Parameters are as per GET /api/V1/recordings. On
+   * success (status 200), the response body will contain CSV
+   * formatted details of the selected recordings.
+   *
+   * @apiUse V1UserAuthorizationHeader
+   * @apiParam {String} [jwt] Signed JWT as produced by the [Token](#api-Authentication-Token) endpoint
+   * @apiUse BaseQueryParams
+   * @apiUse MoreQueryParams
+   * @apiUse FilterOptions
+   * @apiUse V1ResponseError
+   */
+  app.get(
+    apiUrl + "/report",
+    [auth.paramOrHeader].concat(queryValidators),
+    middleware.requestWrapper(async (request, response) => {
+      const rows = await recordingUtil.report(request);
+      response.status(200).set({
+        "Content-Type": "text/csv",
+        "Content-Disposition": "attachment; filename=recordings.csv"
+      });
+      csv.writeToStream(response, rows);
     })
   );
 
@@ -162,6 +208,8 @@ module.exports = (app, baseUrl) => {
    *
    * @apiUse FilterOptions
    * @apiUse V1ResponseSuccess
+   * @apiSuccess {int} fileSize the number of bytes in recording file.
+   * @apiSuccess {int} rawSize the number of bytes in raw recording file.
    * @apiSuccess {String} downloadFileJWT JSON Web Token to use to download the
    * recording file.
    * @apiSuccess {String} downloadRawJWT JSON Web Token to use to download
@@ -171,180 +219,193 @@ module.exports = (app, baseUrl) => {
    * @apiUse V1ResponseError
    */
   app.get(
-    apiUrl + '/:id',
+    apiUrl + "/:id",
     [
-      middleware.authenticateUser,
-      param('id').isInt(),
-      middleware.parseJSON('filterOptions', query).optional(),
+      auth.authenticateUser,
+      param("id").isInt(),
+      middleware.parseJSON("filterOptions", query).optional()
     ],
     middleware.requestWrapper(async (request, response) => {
-      const { recording, rawJWT, cookedJWT } = await recordingUtil.get(request);
+      const {
+        recording,
+        rawSize,
+        rawJWT,
+        cookedSize,
+        cookedJWT
+      } = await recordingUtil.get(request);
+
       responseUtil.send(response, {
         statusCode: 200,
         messages: [],
         recording: recording,
+        rawSize: rawSize,
+        fileSize: cookedSize,
         downloadFileJWT: cookedJWT,
-        downloadRawJWT: rawJWT,
+        downloadRawJWT: rawJWT
       });
     })
   );
 
   /**
-  * @api {delete} /api/v1/recordings/:id Delete an existing recording
-  * @apiName DeleteRecording
-  * @apiGroup Recordings
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  */
+   * @api {delete} /api/v1/recordings/:id Delete an existing recording
+   * @apiName DeleteRecording
+   * @apiGroup Recordings
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   */
   app.delete(
-    apiUrl + '/:id',
-    [
-      middleware.authenticateUser,
-      param('id').isInt(),
-    ],
+    apiUrl + "/:id",
+    [auth.authenticateUser, param("id").isInt()],
     middleware.requestWrapper(async (request, response) => {
       return recordingUtil.delete_(request, response);
     })
   );
 
   /**
-  * @api {patch} /api/v1/recordings/:id Update an existing recording
-  * @apiName UpdateRecording
-  * @apiGroup Recordings
-  * @apiDescription This call is used for updating fields of a previously
-  * submitted recording.
-  *
-  * The following fields that may be updated are:
-  * - location
-  * - comment
-  * - additionalMetadata
-  *
-  * If a change to any other field is attempted the request will fail and no
-  * update will occur.
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiParam {JSON} updates Object containing the fields to update and their new values.
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  */
+   * @api {patch} /api/v1/recordings/:id Update an existing recording
+   * @apiName UpdateRecording
+   * @apiGroup Recordings
+   * @apiDescription This call is used for updating fields of a previously
+   * submitted recording.
+   *
+   * The following fields that may be updated are:
+   * - location
+   * - comment
+   * - additionalMetadata
+   *
+   * If a change to any other field is attempted the request will fail and no
+   * update will occur.
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiParam {JSON} updates Object containing the fields to update and their new values.
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   */
   app.patch(
-    apiUrl + '/:id',
+    apiUrl + "/:id",
     [
-      middleware.authenticateUser,
-      param('id').isInt(),
-      middleware.parseJSON('updates', body),
+      auth.authenticateUser,
+      param("id").isInt(),
+      middleware.parseJSON("updates", body)
     ],
     middleware.requestWrapper(async (request, response) => {
-      var updated = await models.Recording.updateOne(
-        request.user, request.params.id, request.body.updates);
+      const updated = await models.Recording.updateOne(
+        request.user,
+        request.params.id,
+        request.body.updates
+      );
 
       if (updated) {
         return responseUtil.send(response, {
           statusCode: 200,
-          messages: ['Updated recording.']
+          messages: ["Updated recording."]
         });
       } else {
         return responseUtil.send(response, {
           statusCode: 400,
-          messages: ['Failed to update recordings.'],
+          messages: ["Failed to update recordings."]
         });
       }
     })
   );
 
   /**
-  * @api {post} /api/v1/recordings/:id/tracks Add new track to recording
-  * @apiName PostTrack
-  * @apiGroup Tracks
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiParam {number} id Id of the recording to add the track to.
-  * @apiParam {JSON} data Data which defines the track (type specific).
-  * @apiParam {JSON} algorithm (Optional) Description of algorithm that generated track
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiSuccess {int} trackId Unique id of the newly created track.
-  *
-  * @apiUse V1ResponseError
-  *
-  */
+   * @api {post} /api/v1/recordings/:id/tracks Add new track to recording
+   * @apiName PostTrack
+   * @apiGroup Tracks
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiParam {number} id Id of the recording to add the track to.
+   * @apiParam {JSON} data Data which defines the track (type specific).
+   * @apiParam {JSON} algorithm (Optional) Description of algorithm that generated track
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiSuccess {int} trackId Unique id of the newly created track.
+   *
+   * @apiUse V1ResponseError
+   *
+   */
   app.post(
-    apiUrl + '/:id/tracks',
+    apiUrl + "/:id/tracks",
     [
-      middleware.authenticateUser,
-      param('id').isInt().toInt(),
-      middleware.parseJSON('data', body),
-      middleware.parseJSON('algorithm', body).optional(),
+      auth.authenticateUser,
+      param("id")
+        .isInt()
+        .toInt(),
+      middleware.parseJSON("data", body),
+      middleware.parseJSON("algorithm", body).optional()
     ],
     middleware.requestWrapper(async (request, response) => {
       const recording = await models.Recording.get(
         request.user,
         request.params.id,
-        models.Recording.Perms.UPDATE,
+        models.Recording.Perms.UPDATE
       );
       if (!recording) {
         responseUtil.send(response, {
           statusCode: 400,
-          messages: ["No such recording or access denied."],
+          messages: ["No such recording."]
         });
         return;
       }
 
-      const algorithm = (request.body.algorithm ? request.body.algorithm : "{'status': 'User added.'");
-      const algorithmDetail = await models.DetailSnapshot.getOrCreateMatching("algorithm", algorithm);
+      const algorithm = request.body.algorithm
+        ? request.body.algorithm
+        : "{'status': 'User added.'";
+      const algorithmDetail = await models.DetailSnapshot.getOrCreateMatching(
+        "algorithm",
+        algorithm
+      );
 
       const track = await recording.createTrack({
         data: request.body.data,
-        AlgorithmId: algorithmDetail.id,
+        AlgorithmId: algorithmDetail.id
       });
       responseUtil.send(response, {
         statusCode: 200,
         messages: ["Track added."],
-        trackId: track.id,
+        trackId: track.id
       });
     })
   );
 
   /**
-  * @api {get} /api/v1/recordings/:id/tracks Get tracks for recording
-  * @apiName GetTracks
-  * @apiGroup Tracks
-  * @apiDescription Get all tracks for a given recording and their tags.
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiSuccess {JSON} tracks Array with elements containing id,
-  * algorithm, data and tags fields.
-  *
-  * @apiUse V1ResponseError
-  */
+   * @api {get} /api/v1/recordings/:id/tracks Get tracks for recording
+   * @apiName GetTracks
+   * @apiGroup Tracks
+   * @apiDescription Get all tracks for a given recording and their tags.
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiSuccess {JSON} tracks Array with elements containing id,
+   * algorithm, data and tags fields.
+   *
+   * @apiUse V1ResponseError
+   */
   app.get(
-    apiUrl + '/:id/tracks',
-    [
-      middleware.authenticateUser,
-      param('id').isInt(),
-    ],
+    apiUrl + "/:id/tracks",
+    [auth.authenticateUser, param("id").isInt()],
     middleware.requestWrapper(async (request, response) => {
       const recording = await models.Recording.get(
         request.user,
         request.params.id,
-        models.Recording.Perms.VIEW,
+        models.Recording.Perms.VIEW
       );
       if (!recording) {
         responseUtil.send(response, {
           statusCode: 400,
-          messages: ["No such recording or access denied."],
+          messages: ["No such recording."]
         });
         return;
       }
-      
+
       const tracks = await recording.getActiveTracksTagsAndTagger();
       responseUtil.send(response, {
         statusCode: 200,
@@ -352,27 +413,31 @@ module.exports = (app, baseUrl) => {
         tracks: tracks.map(t => {
           delete t.dataValues.RecordingId;
           return t;
-        }),
+        })
       });
     })
   );
 
   /**
-  * @api {delete} /api/v1/recordings/:id/tracks/:trackId Remove track from recording
-  * @apiName DeleteTrack
-  * @apiGroup Tracks
-  *
-  * @apiUse V1UserAuthorizationHeader
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  *
-  */
+   * @api {delete} /api/v1/recordings/:id/tracks/:trackId Remove track from recording
+   * @apiName DeleteTrack
+   * @apiGroup Tracks
+   *
+   * @apiUse V1UserAuthorizationHeader
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   *
+   */
   app.delete(
-    apiUrl + '/:id/tracks/:trackId',
+    apiUrl + "/:id/tracks/:trackId",
     [
-      middleware.authenticateUser,
-      param('id').isInt().toInt(),
-      param('trackId').isInt().toInt(),
+      auth.authenticateUser,
+      param("id")
+        .isInt()
+        .toInt(),
+      param("trackId")
+        .isInt()
+        .toInt()
     ],
     middleware.requestWrapper(async (request, response) => {
       const track = await loadTrack(request, response);
@@ -382,39 +447,47 @@ module.exports = (app, baseUrl) => {
       await track.destroy();
       responseUtil.send(response, {
         statusCode: 200,
-        messages: ["Track deleted."],
+        messages: ["Track deleted."]
       });
     })
   );
 
   /**
-  * @api {post} /api/v1/recordings/:id/tracks/:trackId/tags Add tag to track
-  * @apiName PostTrackTag
-  * @apiGroup Tracks
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiParam {String} what Object/event to tag.
-  * @apiParam {Number} confidence Tag confidence score.
-  * @apiParam {Boolean} automatic "true" if tag is machine generated, "false" otherwise.
-  * @apiParam {JSON} data Data Additional tag data.
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiSuccess {int} trackTagId Unique id of the newly created track tag.
-  *
-  * @apiUse V1ResponseError
-  *
-  */
+   * @api {post} /api/v1/recordings/:id/tracks/:trackId/tags Add tag to track
+   * @apiName PostTrackTag
+   * @apiGroup Tracks
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiParam {String} what Object/event to tag.
+   * @apiParam {Number} confidence Tag confidence score.
+   * @apiParam {Boolean} automatic "true" if tag is machine generated, "false" otherwise.
+   * @apiParam {JSON} data Data Additional tag data.
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiSuccess {int} trackTagId Unique id of the newly created track tag.
+   *
+   * @apiUse V1ResponseError
+   *
+   */
   app.post(
-    apiUrl + '/:id/tracks/:trackId/tags',
+    apiUrl + "/:id/tracks/:trackId/tags",
     [
-      middleware.authenticateUser,
-      param('id').isInt().toInt(),
-      param('trackId').isInt().toInt(),
-      body('what'),
-      body('confidence').isFloat().toFloat(),
-      body('automatic').isBoolean().toBoolean(),
-      middleware.parseJSON('data', body).optional(),
+      auth.authenticateUser,
+      param("id")
+        .isInt()
+        .toInt(),
+      param("trackId")
+        .isInt()
+        .toInt(),
+      body("what"),
+      body("confidence")
+        .isFloat()
+        .toFloat(),
+      body("automatic")
+        .isBoolean()
+        .toBoolean(),
+      middleware.parseJSON("data", body).optional()
     ],
     middleware.requestWrapper(async (request, response) => {
       const track = await loadTrack(request, response);
@@ -427,33 +500,39 @@ module.exports = (app, baseUrl) => {
         confidence: request.body.confidence,
         automatic: request.body.automatic,
         data: request.body.data,
-        UserId: request.user.id,
+        UserId: request.user.id
       });
       responseUtil.send(response, {
         statusCode: 200,
         messages: ["Track tag added."],
-        trackTagId: tag.id,
+        trackTagId: tag.id
       });
     })
   );
 
   /**
-  * @api {delete} /api/v1/recordings/:id/tracks/:trackId/tags/:trackTagId Delete a track tag
-  * @apiName DeleteTrackTag
-  * @apiGroup Tracks
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiUse V1ResponseError
-  */
+   * @api {delete} /api/v1/recordings/:id/tracks/:trackId/tags/:trackTagId Delete a track tag
+   * @apiName DeleteTrackTag
+   * @apiGroup Tracks
+   *
+   * @apiUse V1UserAuthorizationHeader
+   *
+   * @apiUse V1ResponseSuccess
+   * @apiUse V1ResponseError
+   */
   app.delete(
-    apiUrl + '/:id/tracks/:trackId/tags/:trackTagId',
+    apiUrl + "/:id/tracks/:trackId/tags/:trackTagId",
     [
-      middleware.authenticateUser,
-      param('id').isInt().toInt(),
-      param('trackId').isInt().toInt(),
-      param('trackTagId').isInt().toInt(),
+      auth.authenticateUser,
+      param("id")
+        .isInt()
+        .toInt(),
+      param("trackId")
+        .isInt()
+        .toInt(),
+      param("trackTagId")
+        .isInt()
+        .toInt()
     ],
     middleware.requestWrapper(async (request, response) => {
       const track = await loadTrack(request, response);
@@ -465,7 +544,7 @@ module.exports = (app, baseUrl) => {
       if (!tag) {
         responseUtil.send(response, {
           statusCode: 400,
-          messages: ["No such track tag."],
+          messages: ["No such track tag."]
         });
         return;
       }
@@ -474,69 +553,21 @@ module.exports = (app, baseUrl) => {
 
       responseUtil.send(response, {
         statusCode: 200,
-        messages: ["Track tag deleted."],
+        messages: ["Track tag deleted."]
       });
     })
   );
-
-  /**
-  * @api {get} /api/v1/recordings/reprocess/:id
-  * @apiName Reprocess
-  * @apiGroup Recordings
-  * @apiParam {Number} id of recording to reprocess
-  * @apiDescription Marks a recording for reprocessing and archives existing tracks
-  *
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiUse V1ResponseSuccess
-  * @apiSuccess {Number} recordingId - recording_id reprocessed
-  */
-  app.get(
-    apiUrl + '/reprocess/:id',
-    [
-      middleware.authenticateUser,
-      param('id').isInt(),
-    ],
-    middleware.requestWrapper(async (request, response) => {
-      return await recordingUtil.reprocess(request,response);
-    })
-  );
-
-  /**
-  * @api {post} /api/v1/recordings/reprocess/multiple marks recordings for reprocessing and archives tracks
-  * @apiName ReprocessMultiple
-  * @apiGroup Recordings
-  * @apiParam {JSON} recordings an array of recording ids to reprocess
-
-  * @apiDescription Marks multiple recordings for reprocessing and archives existing tracks
-
-  * @apiUse V1UserAuthorizationHeader
-  *
-  * @apiUse V1RecordingReprocessResponse
-  */
-  app.post(
-    apiUrl + '/reprocess/multiple',
-    [
-      middleware.authenticateUser,
-      middleware.parseJSON('recordings', body),
-
-    ],
-    middleware.requestWrapper(async (request, response) => {
-      return await recordingUtil.reprocessAll(request,response);
-    })
-  );
-
 
   async function loadTrack(request, response) {
     const recording = await models.Recording.get(
       request.user,
       request.params.id,
-      models.Recording.Perms.UPDATE,
+      models.Recording.Perms.UPDATE
     );
     if (!recording) {
       responseUtil.send(response, {
         statusCode: 400,
-        messages: ["No such recording or access denied."],
+        messages: ["No such recording."]
       });
       return;
     }
@@ -545,12 +576,11 @@ module.exports = (app, baseUrl) => {
     if (!track) {
       responseUtil.send(response, {
         statusCode: 400,
-        messages: ["No such track."],
+        messages: ["No such track."]
       });
       return;
     }
 
     return track;
   }
-
 };

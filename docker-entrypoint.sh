@@ -17,6 +17,8 @@ echo "---- Setting up Minio ----"
 ./mc config host add myminio http://127.0.0.1:9001 $MINIO_ACCESS_KEY $MINIO_SECRET_KEY
 ./mc mb myminio/cacophony
 
+echo "mc done"
+
 if [[ $ISOLATE -eq 1 ]]; then
     cp -r /app app-isolated
     echo "---- Installing npm dependencies ----"
@@ -31,5 +33,7 @@ fi
 echo "---- Migrating database ----"
 node_modules/.bin/sequelize db:migrate --config config/app_test_default.js
 sudo -i -u postgres psql cacophonytest -f /app/test/db-seed.sql
+
+echo "alias psqltest='sudo -i -u postgres psql cacophonytest'" > ~/.bashrc
 
 $NODE_BIN Server.js --config=config/app_test_default.js

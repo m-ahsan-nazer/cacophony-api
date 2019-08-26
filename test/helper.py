@@ -7,7 +7,7 @@ from .deviceapi import DeviceAPI
 from .testuser import TestUser
 from .testdevice import TestDevice
 from .testconfig import TestConfig
-from .testexception import TestException
+from .testexception import TestException, UnprocessableError
 
 
 class Helper:
@@ -18,6 +18,10 @@ class Helper:
 
     def login_as(self, username):
         password = self._make_password(username)
+        api = UserAPI(self.config.api_url, username, None, password).login()
+        return TestUser(username, api)
+
+    def login_with_username_password(self, username, password):
         api = UserAPI(self.config.api_url, username, None, password).login()
         return TestUser(username, api)
 
@@ -32,20 +36,18 @@ class Helper:
         api.name_or_email_login(nameOrEmail)
         return TestUser(username, api)
 
-    def login_as_device(self, devicename):
-        password = self._make_password(devicename)
-        device = DeviceAPI(self.config.api_url, devicename, password).login()
-        return TestDevice(devicename, device, self)
+    def login_as_device(self, devicename, groupname=None, password=None):
+        if not password:
+            password = self._make_password(devicename)
+        device = DeviceAPI(self.config.api_url, devicename, password, groupname).login()
+        return TestDevice(devicename, device, self, group=groupname)
 
     def given_new_user_with_device(self, testClass, username_base):
         self._print_description("Given a new user {}".format(username_base))
         user = self.given_new_user(testClass, username_base)
         devicename = user.username + "s_device"
         device = self.given_new_device(
-            None,
-            devicename,
-            group=user.get_own_group(),
-            description="    with a device",
+            None, devicename, group=user.get_own_group(), description="    with a device"
         )
         return (user, device)
 
@@ -59,19 +61,25 @@ class Helper:
         for num in range(2, 200):
             try:
                 api = UserAPI(
-                    self.config.api_url,
-                    testname,
-                    testemail,
-                    self._make_password(testname),
+                    self.config.api_url, testname, testemail, self._make_password(testname)
                 ).register_as_new()
                 self._print_actual_name(testname)
                 return TestUser(testname, api, testemail)
-            except OSError:
-                pass
+            except UnprocessableError:
+                pass  # expected
             testname = "{}{}".format(basename, num)
             testemail = "{}{}".format(num, baseemail)
 
         raise TestException("Could not create username like '{}'".format(basename))
+
+    def given_new_fixed_user(self, username, email=None, password=None):
+        if not email:
+            email = username + "@email.com"
+        if not password:
+            password = self._make_password(username)
+        api = UserAPI(self.config.api_url, username, email, password).register_as_new()
+        self._print_actual_name(username)
+        return TestUser(username, api, email)
 
     def _make_unique_name(self, testClass, name, usednames):
         if testClass is not None:
@@ -89,9 +97,7 @@ class Helper:
         groups = self._get_admin().get_groups_as_string()
         return self._make_unique_name(testClass, groupName, groups)
 
-    def given_new_device(
-        self, testClass, devicename=None, group=None, description=None
-    ):
+    def given_new_device(self, testClass, devicename=None, group=None, description=None):
         if not devicename:
             devicename = "random-device"
 
@@ -107,19 +113,18 @@ class Helper:
 
         if not group:
             group = self.config.default_group
-
+        device = DeviceAPI(self.config.api_url, uniqueName, self._make_password(uniqueName)).register_as_new(
+            group
+        )
         try:
-            device = DeviceAPI(
-                self.config.api_url, uniqueName, self._make_password(uniqueName)
-            ).register_as_new(group)
             self._print_actual_name(uniqueName)
-            return TestDevice(uniqueName, device, self)
+            return TestDevice(uniqueName, device, self, group=group)
         except Exception as exception:
             raise TestException("Failed to create device: {}".format(exception))
 
-    def given_a_recording(self, testClass, devicename=None, group=None):
+    def given_a_recording(self, testClass, devicename=None, group=None, props=None):
         device = self.given_new_device(testClass, devicename=devicename, group=group)
-        return device.has_recording()
+        return device.has_recording(props=props)
 
     def _make_long_name(self, testClass, name):
         testName = type(testClass).__name__
@@ -164,6 +169,4 @@ class Helper:
             self.admin_user().create_group(default_group)
 
     def random_id(self, length=6):
-        return "".join(
-            random.choice(string.ascii_uppercase + string.digits) for _ in range(length)
-        )
+        return "".join(random.choice(string.ascii_uppercase + string.digits) for _ in range(length))

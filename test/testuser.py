@@ -1,8 +1,8 @@
+import csv
 import io
-
 import pytest
 
-from .testexception import TestException
+from .testexception import TestException, AuthorizationError
 from .recording import Recording
 from .track import Track, TrackTag
 
@@ -14,22 +14,36 @@ class TestUser:
         self.email = email
         self._group = None
 
+    def new_token(self):
+        return self._userapi.token()["token"]
+
+    def update(self, username=None, email=None, password=None):
+        data = {}
+        if username:
+            data["username"] = username
+        if email:
+            data["email"] = email
+        if password:
+            data["password"] = password
+        self._userapi.update_user(data)
+
     def reprocess_recordings(self, recordings, params=None):
         return self._userapi.reprocess_recordings(recordings, params)
 
     def reprocess(self, recording, params=None):
         return self._userapi.reprocess(recording.id_, params)
 
-    def when_searching_with(self, queryParams):
-        return RecordingQueryPromise(self, queryParams)
+    def when_searching_for(self):
+        return RecordingQueryPromise(self)
 
-    def when_searching_with_tagmode(self, tagmode):
-        queryParams = {"tagmode": tagmode}
-        return RecordingQueryPromise(self, queryParams)
+    def when_searching_for_tagmode_and_tags(self, tagmode, tags):
+        return self.when_searching_for().tagmode(tagmode).tags(tags)
+
+    def when_searching_for_tagmode(self, tagmode):
+        return self.when_searching_for().tagmode(tagmode)
 
     def when_searching_for_tags(self, *tags):
-        queryParams = {"tags": tags}
-        return RecordingQueryPromise(self, queryParams)
+        return self.when_searching_for().tags(tags)
 
     def get_recording(self, recording, params=None):
         return self._userapi.get_recording(recording.id_, params)
@@ -43,20 +57,37 @@ class TestUser:
     def _can_see_recordings_with_query(self, queryParams, *expected_recordings):
         recordings = self._userapi.query(**queryParams)
         if not recordings:
-            raise TestException(
-                "User '{}' could not see any recordings.".format(self.username)
-            )
+            raise TestException("User '{}' could not see any recordings.".format(self.username))
+
+        # Check presence of various fields
+        r0 = recordings[0]
+        assert r0["id"]
+        assert r0["type"]
+        assert r0["recordingDateTime"]
+        assert r0["rawMimeType"]
+        assert "fileMimeType" in r0
+        assert r0["processingState"]
+        assert r0["duration"] > 0
+        assert "location" in r0
+        assert "batteryLevel" in r0
+        assert r0["DeviceId"]
+        assert r0["GroupId"]
 
         _errors = []
         for testRecording in expected_recordings:
             if not self._recording_in_list(recordings, testRecording):
                 _errors.append(
-                    "User '{}' cannot see recording with id {}.".format(
-                        self.username, testRecording.id_
+                    "User '{}' cannot see recording with id {}, name {}.".format(
+                        self.username, testRecording.id_, testRecording.name
                     )
                 )
 
         if _errors:
+            recordingIds = "Recording ids seen are: "
+            for recording in recordings:
+                recordingIds += str(recording["id"])
+                recordingIds += ","
+            _errors.append(recordingIds)
             raise TestException(_errors)
 
     def cannot_see_recordings(self, *expected_recordings):
@@ -69,8 +100,8 @@ class TestUser:
         for testRecording in expected_recordings:
             if self._recording_in_list(recordings, testRecording):
                 _errors.append(
-                    "User '{}' can see recording with id {}, but shouldn't be able to..".format(
-                        self.username, testRecording.id_
+                    "User '{}' can see recording with id {}, name {}, but shouldn't be able to..".format(
+                        self.username, testRecording.id_, testRecording.name
                     )
                 )
 
@@ -85,16 +116,12 @@ class TestUser:
 
     def can_see_recording_from(self, testdevice):
         recordings = self._userapi.query(limit=1)
-        assert recordings, "User '{}' could not see any recordings.".format(
-            self.username
-        )
+        assert recordings, "User '{}' could not see any recordings.".format(self.username)
 
         lastDevice = recordings[0]["Device"]["devicename"]
         assert (
             lastDevice == testdevice.devicename
-        ), "Latest recording is from device '{}', not from '{}'".format(
-            lastDevice, testdevice.devicename
-        )
+        ), "Latest recording is from device '{}', not from '{}'".format(lastDevice, testdevice.devicename)
 
     def cannot_see_any_recordings(self):
         recordings = self._userapi.query(limit=10)
@@ -105,13 +132,18 @@ class TestUser:
                 )
             )
 
+    def get_report(self, **args):
+        text = self._userapi.report(**args)
+        return csv.DictReader(text.splitlines())
+
     def can_download_correct_recording(self, recording):
+        r = self._userapi.get_recording_response(recording.id_)
         content = io.BytesIO()
-        for chunk in self._userapi.download_cptv(recording.id_):
+        for chunk in self._userapi._download_signed(r["downloadRawJWT"]):
             content.write(chunk)
         assert content.getvalue() == recording.content
-
-        recv_props = self._userapi.get_recording(recording.id_)
+        assert len(content.getvalue()) == r["rawSize"]
+        recv_props = r["recording"]
 
         props = recording.props.copy()
 
@@ -126,11 +158,9 @@ class TestUser:
         del recv_props["GroupId"]
         del recv_props["location"]
         del recv_props["rawFileKey"]
-        del recv_props["rawFileSize"]
         if "rawMimeType" not in props:
             del recv_props["rawMimeType"]
         del recv_props["fileKey"]
-        del recv_props["fileSize"]
         del recv_props["fileMimeType"]
         if "type" not in props:
             recv_props.pop("type", None)
@@ -143,15 +173,13 @@ class TestUser:
         assert recv_props.pop("processingState") != "FINISHED"
 
         # # Time formatting may differ so these are handled specially.
-        assertDateTimeStrings(
-            recv_props.pop("recordingDateTime"), props.pop("recordingDateTime")
-        )
+        assertDateTimeStrings(recv_props.pop("recordingDateTime"), props.pop("recordingDateTime"))
 
         # Compare the remaining properties.
         assert recv_props == props
 
     def cannot_download_recording(self, recording):
-        with pytest.raises(IOError):
+        with pytest.raises(AuthorizationError):
             self._userapi.get_recording(recording.id_)
 
     def delete_recording(self, recording):
@@ -159,23 +187,29 @@ class TestUser:
 
     def update_recording(self, recording, **updates):
         self._userapi.update_recording(recording.id_, updates)
+        recording.props.update(updates)
 
     def create_group(self, groupname, printname=True):
         try:
             self._userapi.create_group(groupname)
         except Exception as exception:
-            raise TestException(
-                "Failed to create group ({}): {}".format(groupname, exception)
-            )
+            raise TestException("Failed to create group ({}): {}".format(groupname, exception))
         if printname:
             print("({})".format(groupname))
         return groupname
 
     def get_user_details(self, user):
-        self._userapi.get_user_details(user.username)
+        return self._userapi.get_user_details(user.username)
 
     def tag_recording(self, recording, tagDictionary):
-        self._userapi.tag_recording(recording.id_, tagDictionary)
+        return self._userapi.tag_recording(recording.id_, tagDictionary)
+
+    def cannot_delete_recording_tag(self, tag_id):
+        with pytest.raises(AuthorizationError):
+            self._userapi.delete_recording_tag(tag_id)
+
+    def delete_recording_tag(self, tag_id):
+        return self._userapi.delete_recording_tag(tag_id)
 
     def can_see_audio_recording(self, recording):
         self._userapi.get_audio(recording.id_)
@@ -208,28 +242,32 @@ class TestUser:
         deviceId = None
         if device is not None:
             deviceId = device.get_id()
-        return self._userapi.query_events(
-            deviceId=deviceId, startTime=startTime, endTime=endTime
-        )
+        return self._userapi.query_events(deviceId=deviceId, startTime=startTime, endTime=endTime)
 
     def cannot_see_events(self):
         events = self._userapi.query_events()
-        assert not events, "User '{}' can see events when it shouldn't".format(
-            self.username
-        )
+        assert not events, "User '{}' can see events when it shouldn't".format(self.username)
 
     def get_device_id(self, devicename):
         return self._userapi.get_device_id(devicename)
 
+    def get_devices_as_ids(self):
+        return [device["id"] for device in self._userapi.get_devices_as_json()]
+
+    def get_devices_as_string(self):
+        return self._userapi.get_devices_as_string()
+
     def cannot_download_audio(self, recording):
-        with pytest.raises(IOError):
+        with pytest.raises(AuthorizationError):
             self._userapi.download_audio(recording.id_)
 
-    def upload_audio_bait(self, details={"animal": "possum"}):
+    def upload_audio_bait(self, details=None):
+        if details is None:
+            details = {"animal": "possum"}
         props = {"type": "audioBait", "details": details}
         filename = "files/small.cptv"
-        recording_id = self._userapi.upload_file(filename, props)
-        return recording_id
+        file_id = self._userapi.upload_file(filename, props)
+        return file_id
 
     def download_audio_bait(self, file_id):
         return self._userapi.download_file(file_id)
@@ -241,7 +279,8 @@ class TestUser:
         self._userapi.delete_file(file_id)
 
     def cannot_delete_audio_bait_file(self, file_id):
-        self._userapi.delete_file(file_id)
+        with pytest.raises(AuthorizationError):
+            self._userapi.delete_file(file_id)
 
     def set_audio_schedule_for(self, deviceIds, schedule):
         self._userapi.upload_schedule(deviceIds, schedule)
@@ -250,15 +289,20 @@ class TestUser:
         return AudioSchedulePromise(self, schedule)
 
     def get_audio_schedule(self, device):
-        return self._userapi.get_audio_schedule(device.devicename)
+        print(f"device {device.devicename} has id {device.get_id()}")
 
-    def uploads_recording_for(self, testdevice):
+        return self._userapi.get_audio_schedule(device.get_id())
+
+    def uploads_recording_for(self, testdevice, device_id=None):
         props = testdevice.get_new_recording_props()
 
         filename = "files/small.cptv"
-        recording_id = self._userapi.upload_recording_for(
-            testdevice.devicename, filename, props
-        )
+        if device_id:
+            devicename = device_id
+        else:
+            devicename = testdevice.devicename
+
+        recording_id = self._userapi.upload_recording_for(testdevice.group, devicename, filename, props)
 
         # Expect to see this in data returned by the API server.
         props["rawMimeType"] = "application/x-cptv"
@@ -292,43 +336,43 @@ class TestUser:
 
     def can_add_track_to_recording(self, recording):
         track = Track.create(recording)
-        track.id_ = self._userapi.add_track(
-            recording.id_, track.data
-        )
+        track.id_ = self._userapi.add_track(recording.id_, track.data)
+        recording.tracks.append(track)
         return track
 
     def cannot_add_track_to_recording(self, recording):
-        with pytest.raises(IOError):
+        with pytest.raises(AuthorizationError):
             self.can_add_track_to_recording(recording)
 
     def has_no_tracks(self, recording):
-        tracks = self._userapi.get_tracks(recording.id_)
-        assert len(tracks) == 0
+        assert not self._userapi.get_tracks(recording.id_)
 
-    def can_see_track(self, expected_track, expected_tags=None):
+    def recording_has_tags(self, recording, ai_tag_count, human_tag_count):
+        recording = self._userapi.get_recording(recording.id_)
+        tags = recording.get("Tags", [])
+
+        automatic_tags = [tag for tag in tags if tag["automatic"]]
+        human_tags = [tag for tag in tags if not tag["automatic"]]
+        assert ai_tag_count == len(automatic_tags)
+        assert human_tag_count == len(human_tags)
+
+    def can_see_track(self, expected_track):
         recording = expected_track.recording
         tracks = self._userapi.get_tracks(recording.id_)
         for t in tracks:
-            this_track = Track(
-                id_=t["id"],
-                recording=recording,
-                data=t["data"],
-            )
+            this_track = Track(id_=t["id"], recording=recording, data=t["data"])
+            this_track.tags = [
+                TrackTag(
+                    id_=tt["id"],
+                    track=this_track,
+                    what=tt["what"],
+                    confidence=tt["confidence"],
+                    automatic=tt["automatic"],
+                    data=tt["data"],
+                )
+                for tt in t["TrackTags"]
+            ]
             if this_track == expected_track:
-                if expected_tags:
-                    tags = [
-                        TrackTag(
-                            id_=tt["id"],
-                            track=this_track,
-                            what=tt["what"],
-                            confidence=tt["confidence"],
-                            automatic=tt["automatic"],
-                            data=tt["data"],
-                        )
-                        for tt in t["TrackTags"]
-                    ]
-                    for expected_tag in expected_tags:
-                        assert expected_tag in tags
                 return
 
         pytest.fail("no such track found: {}".format(expected_track))
@@ -336,21 +380,34 @@ class TestUser:
     def cannot_see_track(self, target):
         tracks = self._userapi.get_tracks(target.recording.id_)
         for t in tracks:
-            if (
-                Track(target.recording, t["data"], t["id"])
-                == target
-            ):
+            if Track(target.recording, t["data"], t["id"]) == target:
                 pytest.fail("track not deleted: {}".format(target))
 
     def delete_track(self, track):
         self._userapi.delete_track(track.recording.id_, track.id_)
 
     def cannot_delete_track(self, track):
-        with pytest.raises(IOError):
+        with pytest.raises(AuthorizationError):
             self._userapi.delete_track(track.recording.id_, track.id_)
 
-    def can_tag_track(self, track):
-        tag = TrackTag.create(track)
+    def tag_track(self, track, what):
+        self._tag_track_as(track, what, False)
+
+    def tag_track_as_AI(self, track, what):
+        self._tag_track_as(track, what, True)
+
+    def _tag_track_as(self, track, what, automatic):
+        self._userapi.add_track_tag(
+            recording_id=track.recording.id_,
+            track_id=track.id_,
+            what=what,
+            confidence=0.7,
+            automatic=automatic,
+            data={},
+        )
+
+    def can_tag_track(self, track, automatic=None, what=None):
+        tag = TrackTag.create(track, automatic=automatic, what=what)
         tag.id_ = self._userapi.add_track_tag(
             recording_id=track.recording.id_,
             track_id=track.id_,
@@ -359,43 +416,52 @@ class TestUser:
             automatic=tag.automatic,
             data=tag.data,
         )
+        track.tags.append(tag)
         return tag
 
     def cannot_tag_track(self, track):
-        with pytest.raises(IOError):
+        with pytest.raises(AuthorizationError):
             self.can_tag_track(track)
 
     def can_delete_track_tag(self, tag):
         self._userapi.delete_track_tag(
-            recording_id=tag.track.recording.id_,
-            track_id=tag.track.id_,
-            track_tag_id=tag.id_,
+            recording_id=tag.track.recording.id_, track_id=tag.track.id_, track_tag_id=tag.id_
         )
+        tag.track.tags.remove(tag)
 
     def cannot_delete_track_tag(self, tag):
-        with pytest.raises(IOError):
+        with pytest.raises(AuthorizationError):
             self.can_delete_track_tag(tag)
 
 
 class RecordingQueryPromise:
-    def __init__(self, testUser, queryParams):
+    def __init__(self, testUser):
         self._testUser = testUser
-        self._queryParams = queryParams
+        self._queryParams = {}
         self._expected_recordings = None
 
+    def tagmode(self, tagmode):
+        self._queryParams["tagmode"] = tagmode
+        return self
+
+    def tags(self, tags):
+        self._queryParams["tags"] = tags
+        return self
+
+    def devices(self, devices):
+        self._queryParams["deviceIds"] = list(map(lambda device: device.get_id(), devices))
+        return self
+
     def can_see_recordings(self, *expected_recordings):
-        self._testUser._can_see_recordings_with_query(
-            self._queryParams, *expected_recordings
-        )
+        self._testUser._can_see_recordings_with_query(self._queryParams, *expected_recordings)
 
     def cannot_see_recordings(self, *expected_recordings):
-        self._testUser._cannot_see_recordings_with_query(
-            self._queryParams, *expected_recordings
-        )
+        self._testUser._cannot_see_recordings_with_query(self._queryParams, *expected_recordings)
 
     def can_see_all_recordings_from_(self, allRecordings):
         self.can_see_recordings(*allRecordings)
 
+    # Expects the function 'from_' to be called to do the evaluating.
     def can_only_see_recordings(self, *expected_recordings):
         self._expected_recordings = expected_recordings
         return self
@@ -406,20 +472,14 @@ class RecordingQueryPromise:
                 "You must call 'can_only_see_recordings' before calling function 'from_list'."
             )
 
-        ids = [
-            testRecording.id_ for testRecording in self._expected_recordings
-        ]
-        print(
-            "Then searching with {} should give only {}.".format(self._queryParams, ids)
-        )
+        ids = [testRecording.id_ for testRecording in self._expected_recordings]
+        print("Then searching with {} should give only {}.".format(self._queryParams, ids))
 
         # test what should be there, is there
         self.can_see_recordings(*self._expected_recordings)
 
         # test what shouldn't be there, isn't there
-        expectedMissingRecordings = [
-            x for x in allRecordings if x not in self._expected_recordings
-        ]
+        expectedMissingRecordings = [x for x in allRecordings if x not in self._expected_recordings]
         self.cannot_see_recordings(*expectedMissingRecordings)
 
 

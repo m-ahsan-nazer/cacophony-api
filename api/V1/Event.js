@@ -16,14 +16,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const models       = require('../../models');
-const responseUtil = require('./responseUtil');
-const middleware   = require('../middleware');
-const { body, query, oneOf } = require('express-validator/check');
-
+const models = require("../../models");
+const responseUtil = require("./responseUtil");
+const middleware = require("../middleware");
+const auth = require("../auth");
+const { body, query, oneOf } = require("express-validator/check");
 
 module.exports = function(app, baseUrl) {
-  var apiUrl = baseUrl + '/events';
+  const apiUrl = baseUrl + "/events";
 
   /**
    * @api {post} /api/v1/events Add new events
@@ -52,31 +52,36 @@ module.exports = function(app, baseUrl) {
   app.post(
     apiUrl,
     [
-      middleware.authenticateDevice,
-      middleware.getDetailSnapshotById(body, 'eventDetailId').optional(),
-      middleware.isDateArray("dateTimes", "List of times event occured is required."),
-      oneOf([
-        body("eventDetailId").exists(),
-        body("description.type").exists(),
-      ], "Either 'eventDetailId' or 'description.type' must be specified."),
+      auth.authenticateDevice,
+      middleware.getDetailSnapshotById(body, "eventDetailId").optional(),
+      middleware.isDateArray(
+        "dateTimes",
+        "List of times event occured is required."
+      ),
+      oneOf(
+        [body("eventDetailId").exists(), body("description.type").exists()],
+        "Either 'eventDetailId' or 'description.type' must be specified."
+      )
     ],
     middleware.requestWrapper(async (request, response) => {
-
-      var detailsId = request.body.eventDetailId;
+      let detailsId = request.body.eventDetailId;
       if (!detailsId) {
-        var description = request.body.description;
-        var detail = await models.DetailSnapshot.getOrCreateMatching(description.type, description.details);
+        const description = request.body.description;
+        const detail = await models.DetailSnapshot.getOrCreateMatching(
+          description.type,
+          description.details
+        );
         detailsId = detail.id;
       }
 
-      var eventList = [];
-      var count = 0;
+      const eventList = [];
+      let count = 0;
 
       request.body.dateTimes.forEach(function(time) {
         eventList.push({
           DeviceId: request.device.id,
           EventDetailId: detailsId,
-          dateTime: time,
+          dateTime: time
         });
         count++;
       });
@@ -86,15 +91,15 @@ module.exports = function(app, baseUrl) {
       } catch (exception) {
         return responseUtil.send(response, {
           statusCode: 500,
-          messages: ["Failed to record events.", exception.message],
+          messages: ["Failed to record events.", exception.message]
         });
       }
 
       return responseUtil.send(response, {
         statusCode: 200,
-        messages: ['Added events.'],
+        messages: ["Added events."],
         eventsAdded: count,
-        eventDetailId: detailsId,
+        eventDetailId: detailsId
       });
     })
   );
@@ -117,25 +122,39 @@ module.exports = function(app, baseUrl) {
   app.get(
     apiUrl,
     [
-      middleware.authenticateUser,
-      query('startTime').isISO8601({ strict: true }).optional(),
-      query('endTime').isISO8601({ strict: true }).optional(),
-      query('deviceId').isInt().optional().toInt(),
-      query('offset').isInt().optional().toInt(),
-      query('limit').isInt().optional().toInt(),
+      auth.authenticateUser,
+      query("startTime")
+        .isISO8601({ strict: true })
+        .optional(),
+      query("endTime")
+        .isISO8601({ strict: true })
+        .optional(),
+      query("deviceId")
+        .isInt()
+        .optional()
+        .toInt(),
+      query("offset")
+        .isInt()
+        .optional()
+        .toInt(),
+      query("limit")
+        .isInt()
+        .optional()
+        .toInt()
     ],
     middleware.requestWrapper(async (request, response) => {
       const query = request.query;
       query.offset = query.offset || 0;
       query.limit = query.limit || 100;
 
-      var result = await models.Event.query(
+      const result = await models.Event.query(
         request.user,
         query.startTime,
         query.endTime,
         query.deviceId,
         query.offset,
-        query.limit);
+        query.limit
+      );
 
       return responseUtil.send(response, {
         statusCode: 200,
@@ -143,7 +162,7 @@ module.exports = function(app, baseUrl) {
         limit: query.limit,
         offset: query.offset,
         count: result.count,
-        rows: result.rows,
+        rows: result.rows
       });
     })
   );

@@ -16,16 +16,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-const models = require('../../models');
-const jwt          = require('jsonwebtoken');
-const config       = require('../../config');
-const responseUtil = require('./responseUtil');
-const middleware   = require('../middleware');
-const { body, param } = require('express-validator/check');
-const { ClientError } = require('../customErrors');
+const models = require("../../models");
+const responseUtil = require("./responseUtil");
+const middleware = require("../middleware");
+const auth = require("../auth");
+const { body, param } = require("express-validator/check");
+const { matchedData } = require("express-validator/filter");
+const { ClientError } = require("../customErrors");
 
 module.exports = function(app, baseUrl) {
-  var apiUrl = baseUrl + '/users';
+  const apiUrl = baseUrl + "/users";
 
   /**
    * @api {post} /api/v1/users Register a new user
@@ -45,27 +45,29 @@ module.exports = function(app, baseUrl) {
   app.post(
     apiUrl,
     [
-      middleware.checkNewName('username')
-        .custom(value => { return models.User.freeUsername(value); }),
-      body('email').isEmail().withMessage("Invalid email")
-        .custom(value => { return models.User.freeEmail(value); }),
-      middleware.checkNewPassword('password'),
+      middleware.checkNewName("username").custom(value => {
+        return models.User.freeUsername(value);
+      }),
+      body("email")
+        .isEmail()
+        .custom(value => {
+          return models.User.freeEmail(value);
+        }),
+      middleware.checkNewPassword("password")
     ],
     middleware.requestWrapper(async (request, response) => {
-
-      var user = await models.User.create({
+      const user = await models.User.create({
         username: request.body.username,
         password: request.body.password,
-        email: request.body.email,
+        email: request.body.email
       });
 
-      var jwtData = user.getJwtDataValues();
-      var userData = await user.getDataValues();
+      const userData = await user.getDataValues();
 
       return responseUtil.send(response, {
         statusCode: 200,
-        messages: ['Created new user.'],
-        token: 'JWT ' + jwt.sign(jwtData, config.server.passportSecret),
+        messages: ["Created new user."],
+        token: "JWT " + auth.createEntityJWT(user),
         userData: userData
       });
     })
@@ -78,7 +80,9 @@ module.exports = function(app, baseUrl) {
    *
    * @apiUse V1UserAuthorizationHeader
    *
-   * @apiParam {JSON} data Fields to update.
+   * @apiParam {String} [username] New username to set.
+   * @apiParam {String} [password] New password to set.
+   * @apiParam {String} [email] New email to set.
    *
    * @apiUse V1ResponseSuccess
    * @apiUse V1ResponseError
@@ -86,23 +90,47 @@ module.exports = function(app, baseUrl) {
   app.patch(
     apiUrl,
     [
-      middleware.authenticateUser,
-      middleware.parseJSON('data', body),
+      auth.authenticateUser,
+      (req, _, next) => {
+        // Deprecated, legacy support until consumers migrated see #199 on GitHub
+        if (typeof req.body.data === "string") {
+          try {
+            const json = JSON.parse(req.body.data);
+            req.body.email = json.email;
+            req.body.username = json.username;
+            req.body.password = json.password;
+          } catch (e) {
+            throw new ClientError("Could not parse JSON in data field.");
+          }
+        }
+        next();
+      },
+      middleware
+        .checkNewName("username")
+        .custom(value => {
+          return models.User.freeUsername(value);
+        })
+        .optional(),
+      body("email")
+        .isEmail()
+        .custom(value => {
+          return models.User.freeEmail(value);
+        })
+        .optional(),
+      middleware.checkNewPassword("password").optional()
     ],
     middleware.requestWrapper(async (request, response) => {
-      const email = request.body.data.email;
-      const user = request.user;
-      if (email) {
-        try {
-          await models.User.freeEmail(email, user.id);
-        } catch (e) {
-          throw new ClientError('Error: ' + e.message);
-        }
+      const validData = matchedData(request);
+      if (Object.keys(validData).length === 0) {
+        throw new ClientError(
+          "Must provide at least one of: username; email; password."
+        );
       }
-      await user.update(request.body.data, { fields: user.apiSettableFields });
+      const user = request.user;
+      await user.update(validData, { fields: user.apiSettableFields });
       responseUtil.send(response, {
         statusCode: 200,
-        messages: ['Updated user.'],
+        messages: ["Updated user."]
       });
     })
   );
@@ -121,15 +149,12 @@ module.exports = function(app, baseUrl) {
    */
   app.get(
     apiUrl + "/:username",
-    [
-      middleware.authenticateUser,
-      middleware.getUserByName(param),
-    ],
+    [auth.authenticateUser, middleware.getUserByName(param)],
     middleware.requestWrapper(async (request, response) => {
       return responseUtil.send(response, {
         statusCode: 200,
         messages: [],
-        userData: await request.body.user.getDataValues(),
+        userData: await request.body.user.getDataValues()
       });
     })
   );

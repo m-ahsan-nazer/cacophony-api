@@ -6,12 +6,14 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 from urllib.parse import urljoin
 from datetime import datetime
 
+from .testexception import raise_specific_exception
 from .apibase import APIBase
 
 
 class UserAPI(APIBase):
     def __init__(self, baseurl, username, email, password="password"):
         super().__init__("user", baseurl, username, password)
+        self.postdata["email"] = email
         self.email = email
 
     def register_as_new(self):
@@ -19,6 +21,10 @@ class UserAPI(APIBase):
 
     def login(self):
         return super().login(email=self.email)
+
+    def token(self):
+        response = requests.post(urljoin(self._baseurl, "/token"), headers=self._auth_header)
+        return self._check_response(response)
 
     def name_or_email_login(self, nameOrEmail):
         url = urljoin(self._baseurl, "/authenticate_" + self._logintype)
@@ -37,6 +43,8 @@ class UserAPI(APIBase):
         tagmode=None,
         tags=None,
         filterOptions=None,
+        deviceIds=None,
+        return_json=False,
     ):
         where = defaultdict(dict)
         where["duration"] = {"$gte": min_secs}
@@ -44,6 +52,8 @@ class UserAPI(APIBase):
             where["recordingDateTime"]["$gte"] = startDate.isoformat()
         if endDate is not None:
             where["recordingDateTime"]["$lte"] = endDate.isoformat()
+        if deviceIds is not None:
+            where["DeviceId"] = deviceIds
 
         return self._query(
             "recordings",
@@ -53,12 +63,64 @@ class UserAPI(APIBase):
             tagMode=tagmode,
             tags=tags,
             filterOptions=filterOptions,
+            return_json=return_json,
         )
 
+    def report(
+        self,
+        startDate=None,
+        endDate=None,
+        min_secs=0,
+        limit=100,
+        offset=0,
+        tagmode=None,
+        tags=None,
+        filterOptions=None,
+        deviceIds=None,
+        jwt=None,
+    ):
+        where = defaultdict(dict)
+        where["duration"] = {"$gte": min_secs}
+        if startDate is not None:
+            where["recordingDateTime"]["$gte"] = startDate.isoformat()
+        if endDate is not None:
+            where["recordingDateTime"]["$lte"] = endDate.isoformat()
+        if deviceIds is not None:
+            where["DeviceId"] = deviceIds
+
+        url = urljoin(self._baseurl, "/api/v1/recordings/report")
+        params = {
+            "where": where,
+            "limit": limit,
+            "offset": offset,
+            "tagMode": tagmode,
+            "tags": tags,
+            "filterOptions": filterOptions,
+        }
+
+        if jwt:
+            params["jwt"] = jwt
+            headers = None
+        else:
+            headers = self._auth_header
+
+        response = requests.get(url, params=serialise_params(params), headers=headers)
+        if response.status_code == 200:
+            return response.text
+        raise_specific_exception(response)
+
+    def update_user(self, body):
+        url = urljoin(self._baseurl, "/api/v1/users")
+        response = requests.patch(url, data=body, headers=self._auth_header)
+        self._check_response(response)
+
     def get_recording(self, recording_id, params=None):
+        return self.get_recording_response(recording_id, params)["recording"]
+
+    def get_recording_response(self, recording_id, params=None):
         url = urljoin(self._baseurl, "/api/v1/recordings/{}".format(recording_id))
         r = requests.get(url, headers=self._auth_header, params=params)
-        return self._check_response(r)["recording"]
+        return self._check_response(r)
 
     def delete_recording(self, recording_id):
         url = urljoin(self._baseurl, "/api/v1/recordings/{}".format(recording_id))
@@ -67,20 +129,19 @@ class UserAPI(APIBase):
 
     def update_recording(self, recording_id, updates):
         url = urljoin(self._baseurl, "/api/v1/recordings/{}".format(recording_id))
-        r = requests.patch(
-            url, headers=self._auth_header, data={"updates": json.dumps(updates)}
-        )
+        r = requests.patch(url, headers=self._auth_header, data={"updates": json.dumps(updates)})
         return self._check_response(r)
 
     def reprocess(self, recording_id, params=None):
-        reprocessURL = urljoin(self._baseurl, "/api/v1/recordings/reprocess/{}".format(recording_id))
+        reprocessURL = urljoin(self._baseurl, "/api/v1/reprocess/{}".format(recording_id))
         r = requests.get(reprocessURL, headers=self._auth_header, params=params)
         return self._check_response(r)
 
     def reprocess_recordings(self, recordings, params=None):
-        reprocessURL = urljoin(self._baseurl, "/api/v1/recordings/reprocess/multiple")
+        reprocessURL = urljoin(self._baseurl, "/api/v1/reprocess")
         r = requests.post(
-            reprocessURL, headers=self._auth_header, data={"recordings": json.dumps(recordings)})
+            reprocessURL, headers=self._auth_header, data={"recordings": json.dumps(recordings)}
+        )
         return r.status_code, r.json()
 
     def download_cptv(self, recording_id):
@@ -95,9 +156,7 @@ class UserAPI(APIBase):
         d = self._check_response(r)
         return self._download_signed(d[jwt_key])
 
-    def query_audio(
-        self, startDate=None, endDate=None, min_secs=0, limit=100, offset=0
-    ):
+    def query_audio(self, startDate=None, endDate=None, min_secs=0, limit=100, offset=0):
         headers = self._auth_header.copy()
 
         where = defaultdict(dict)
@@ -117,10 +176,7 @@ class UserAPI(APIBase):
         r = requests.get(url, headers=headers)
         if r.status_code == 200:
             return r.json()["result"]["rows"]
-        if r.status_code == 400:
-            messages = r.json()["messages"]
-            raise IOError("request failed ({}): {}".format(r.status_code, messages))
-        r.raise_for_status()
+        raise_specific_exception(r)
 
     def get_audio(self, recording_id):
         url = urljoin(self._baseurl, "/api/v1/audiorecordings/{}".format(recording_id))
@@ -135,9 +191,7 @@ class UserAPI(APIBase):
 
     def update_audio_recording(self, recording_id, updates):
         url = urljoin(self._baseurl, "/api/v1/audiorecordings/{}".format(recording_id))
-        r = requests.put(
-            url, headers=self._auth_header, data={"data": json.dumps(updates)}
-        )
+        r = requests.put(url, headers=self._auth_header, data={"data": json.dumps(updates)})
         return self._check_response(r)
 
     def download_audio(self, recording_id):
@@ -147,32 +201,30 @@ class UserAPI(APIBase):
         return self._download_signed(d["jwt"])
 
     def _get_all(self, url):
-        r = requests.get(
-            urljoin(self._baseurl, url),
-            params={"where": "{}"},
-            headers=self._auth_header,
-        )
-        r.raise_for_status()
-        return r.json()
+        r = requests.get(urljoin(self._baseurl, url), params={"where": "{}"}, headers=self._auth_header)
+        if r.status_code == 200:
+            return r.json()
+        raise_specific_exception(r)
+
+    def get_devices_as_json(self):
+        return self._get_all("/api/v1/devices")["devices"]["rows"]
 
     def get_devices_as_string(self):
-        return json.dumps(self._get_all("/api/v1/devices"))
+        return json.dumps(self.get_devices_as_json())
 
     def get_groups_as_string(self):
         return json.dumps(self._get_all("/api/v1/groups"))
 
-    def get_device_id(self, devicename):
+    def get_device_id(self, devicename, groupId):
         all_devices = self._get_all("/api/v1/devices")["devices"]["rows"]
         for device in all_devices:
-            if device["devicename"] == devicename:
+            if device["GroupId"] == groupId and device["devicename"] == devicename:
                 return device["id"]
         return None
 
     def create_group(self, groupname):
         url = urljoin(self._baseurl, "/api/v1/groups")
-        response = requests.post(
-            url, headers=self._auth_header, data={"groupname": groupname}
-        )
+        response = requests.post(url, headers=self._auth_header, data={"groupname": groupname})
         self._check_response(response)
 
     def get_user_details(self, username):
@@ -184,16 +236,17 @@ class UserAPI(APIBase):
         url = urljoin(self._baseurl, "/api/v1/tags/")
         tagData = {"tag": json.dumps(tagDictionary), "recordingId": recording_id}
         response = requests.post(url, headers=self._auth_header, data=tagData)
-        response.raise_for_status()
+        return self._check_response(response)
+
+    def delete_recording_tag(self, tag_id):
+        tagData = {"tagId": tag_id}
+        response = requests.delete(
+            urljoin(self._baseurl, "/api/v1/tags".format(tag_id)), headers=self._auth_header, data=tagData
+        )
+        return self._check_response(response)["messages"]
 
     def query_events(self, deviceId=None, startTime=None, endTime=None, limit=20):
-        return self._query(
-            "events",
-            deviceId=deviceId,
-            startTime=startTime,
-            endTime=endTime,
-            limit=limit,
-        )
+        return self._query("events", deviceId=deviceId, startTime=startTime, endTime=endTime, limit=limit)
 
     def query_files(self, where=None, limit=None, offset=None):
         if where is None:
@@ -210,25 +263,15 @@ class UserAPI(APIBase):
 
         params.setdefault("limit", 100)
         params.setdefault("offset", 0)
+        return_json = params.pop("return_json", False)
 
-        req_params = {}
-        for name, value in params.items():
-            if value is not None:
-                if isinstance(value, (dict, list, tuple)):
-                    value = json.dumps(value)
-                elif isinstance(value, datetime):
-                    value = value.isoformat()
-                req_params[name] = value
-
-        response = requests.get(url, params=req_params, headers=self._auth_header)
+        response = requests.get(url, params=serialise_params(params), headers=self._auth_header)
         if response.status_code == 200:
-            return response.json()["rows"]
-        if response.status_code in (400, 422):
-            message = response.json()["message"]
-            raise IOError(
-                "request failed ({}): {}".format(response.status_code, message)
-            )
-        response.raise_for_status()
+            if return_json:
+                return response.json()
+            else:
+                return response.json()["rows"]
+        raise_specific_exception(response)
 
     def upload_file(self, filename, props):
         url = urljoin(self._baseurl, "api/v1/files")
@@ -236,15 +279,9 @@ class UserAPI(APIBase):
 
         with open(filename, "rb") as content:
             multipart_data = MultipartEncoder(
-                fields={
-                    "data": json_props,
-                    "file": (os.path.basename(filename), content),
-                }
+                fields={"data": json_props, "file": (os.path.basename(filename), content)}
             )
-            headers = {
-                "Content-Type": multipart_data.content_type,
-                "Authorization": self._token,
-            }
+            headers = {"Content-Type": multipart_data.content_type, "Authorization": self._token}
             r = requests.post(url, data=multipart_data, headers=headers)
         self._check_response(r)
         return r.json()["recordingId"]
@@ -258,22 +295,23 @@ class UserAPI(APIBase):
         response = requests.post(url, data=props, headers=self._auth_header)
         self._check_response(response)
 
-    def get_audio_schedule(self, devicename):
-        url = urljoin(self._baseurl, "/api/v1/schedules/{}".format(devicename))
+    def get_audio_schedule(self, deviceID):
+        url = urljoin(self._baseurl, "/api/v1/schedules/{}".format(deviceID))
         response = requests.get(url, headers=self._auth_header)
         self._check_response(response)
         return response.json()
 
-    def upload_recording_for(self, devicename, filename, props=None):
+    def upload_recording_for(self, groupname, devicename, filename, props=None):
         if not props:
             props = {"type": "thermalRaw"}
-        return self._upload("/api/v1/recordings/{}".format(devicename), filename, props)
+        endpoint = "device/{}".format(devicename)
+        if groupname:
+            endpoint += "/group/{}".format(groupname)
+        return self._upload("/api/v1/recordings/{}".format(endpoint), filename, props)
 
     def set_global_permission(self, user, permission):
         url = urljoin(self._baseurl, "/api/v1/admin/global_permission/" + user)
-        response = requests.patch(
-            url, headers=self._auth_header, data={"permission": permission}
-        )
+        response = requests.patch(url, headers=self._auth_header, data={"permission": permission})
         self._check_response(response)
 
     def add_user_to_group(self, newuser, groupname):
@@ -302,9 +340,7 @@ class UserAPI(APIBase):
 
     def list_device_users(self, deviceid):
         url = urljoin(self._baseurl, "/api/v1/devices/users")
-        response = requests.get(
-            url, headers=self._auth_header, params={"deviceId": deviceid}
-        )
+        response = requests.get(url, headers=self._auth_header, params={"deviceId": deviceid})
         return self._check_response(response).get("rows", [])
 
     def add_track(self, recording_id, data, algorithm={"status": "Test added"}):
@@ -324,20 +360,14 @@ class UserAPI(APIBase):
 
     def delete_track(self, recording_id, track_id):
         response = requests.delete(
-            urljoin(
-                self._baseurl,
-                "/api/v1/recordings/{}/tracks/{}".format(recording_id, track_id),
-            ),
+            urljoin(self._baseurl, "/api/v1/recordings/{}/tracks/{}".format(recording_id, track_id)),
             headers=self._auth_header,
         )
         return self._check_response(response)["messages"]
 
     def add_track_tag(self, recording_id, track_id, what, confidence, automatic, data):
         response = requests.post(
-            urljoin(
-                self._baseurl,
-                "/api/v1/recordings/{}/tracks/{}/tags".format(recording_id, track_id),
-            ),
+            urljoin(self._baseurl, "/api/v1/recordings/{}/tracks/{}/tags".format(recording_id, track_id)),
             headers=self._auth_header,
             data={
                 "what": what,
@@ -352,10 +382,20 @@ class UserAPI(APIBase):
         response = requests.delete(
             urljoin(
                 self._baseurl,
-                "/api/v1/recordings/{}/tracks/{}/tags/{}".format(
-                    recording_id, track_id, track_tag_id
-                ),
+                "/api/v1/recordings/{}/tracks/{}/tags/{}".format(recording_id, track_id, track_tag_id),
             ),
             headers=self._auth_header,
         )
         return self._check_response(response)["messages"]
+
+
+def serialise_params(params):
+    out = {}
+    for name, value in params.items():
+        if value is not None:
+            if isinstance(value, (dict, list, tuple)):
+                value = json.dumps(value)
+            elif isinstance(value, datetime):
+                value = value.isoformat()
+            out[name] = value
+    return out

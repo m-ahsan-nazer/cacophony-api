@@ -6,19 +6,20 @@ const server = {
   loggerLevel: "debug",
   http: {
     active: true,
-    port: 1080,
+    port: 1080
   },
+  recording_url_base: "http://test.site/recording"
 };
 
 const s3 = {
-  publicKey: "minio",  
-  privateKey: "miniostorage", 
+  publicKey: "minio",
+  privateKey: "miniostorage",
   bucket: "cacophony",
-  endpoint: "http://127.0.0.1:9001",
+  endpoint: "http://127.0.0.1:9001"
 };
 
 const fileProcessing = {
-  port: 2008,
+  port: 2008
 };
 
 // ======= Database settings =======
